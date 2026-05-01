@@ -1,0 +1,27 @@
+# Generated TPC-H data (regenerate from dbgen, never commit raw .tbl/.parquet)
+data/
+
+# Per-run raw outputs (logs, JSON, charts). Summary results.csv may be committed
+# under results/<tag>/summary.csv if you want to publish a baseline.
+results/*/raw/
+results/*/logs/
+results/*/charts/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+
+# Local docker overrides
+docker/.env
+docker/.env.local
+docker/build/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+.DS_Store

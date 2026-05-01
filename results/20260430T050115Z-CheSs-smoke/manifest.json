@@ -1,0 +1,69 @@
+{
+  "cold_starts": {
+    "spark-default": {
+      "import_to_session_ready_ms": 8537.840943994524,
+      "session_to_first_query_ms": 2926.8306660014787
+    }
+  },
+  "data_hashes": {
+    "customer.parquet": "a06c379fd4d9e6cdf88b55ffd58a27e8da94981ddff300a086cd27cfc8b88a51",
+    "lineitem.parquet": "586b70d8bcddfc636923ed321a54e45e16bdc5b23a35702eddfb76b9e45c3eb6",
+    "nation.parquet": "e7135c3cfdaabe97c5b8492977c82d62954fcc39badd0dfad914ba351643e4f5",
+    "orders.parquet": "f29283dff4c51f38183cdb579a9ecc0aca47b0aa9d0b5a82d06349a877c91c17",
+    "part.parquet": "70ca6cb182774c5fd114eb05e7b067bf7a1c1ba645e08abacaececa56f57a8da",
+    "partsupp.parquet": "4085e2cc7d82b7ef940030c471fceb702337dce47e8a9b871b46846ef0f3739f",
+    "region.parquet": "8aac3e19c33f446a80d2188b92eb74025953b4271dc36fa6db4ab5628eb16f88",
+    "supplier.parquet": "115aaaf7e5ee37f6de548d671abb5ad710c1384ad4548f7c8b0f5733975f48d6"
+  },
+  "elapsed_seconds": 501.99,
+  "engine_versions": {
+    "spark-default": {
+      "config_keys": {
+        "spark.driver.memory": "4g",
+        "spark.log.level": "WARN",
+        "spark.master": "local[*]",
+        "spark.sql.catalog.spark_catalog": "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+        "spark.sql.extensions": "io.delta.sql.DeltaSparkSessionExtension",
+        "spark.ui.showConsoleProgress": "false"
+      },
+      "config_source": "engines/_spark_session.py",
+      "name": "spark-default",
+      "resolved_config": {
+        "spark.driver.memory": "4g",
+        "spark.log.level": "WARN",
+        "spark.master": "local[*]",
+        "spark.sql.catalog.spark_catalog": "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+        "spark.sql.extensions": "io.delta.sql.DeltaSparkSessionExtension",
+        "spark.ui.showConsoleProgress": "false"
+      },
+      "spark_app_name": "delta-forge-bench-spark-default",
+      "spark_master": "local[*]",
+      "spark_version": "4.1.1"
+    }
+  },
+  "engines": [
+    "spark-default"
+  ],
+  "host": {
+    "captured_at_utc": "2026-04-30T05:01:15+00:00",
+    "container_cpus_env": "unset",
+    "container_memory_env": "unset",
+    "cpu_model": "Intel(R) Core(TM) i9-7980XE CPU @ 2.60GHz",
+    "delta_spark_version": "unset",
+    "df_git_sha": "unset",
+    "df_version": "unset",
+    "hostname": "CheSs",
+    "jdk_version": "unset",
+    "kernel": "6.6.87.2-microsoft-standard-WSL2",
+    "machine": "x86_64",
+    "mem_total_kb": 32697172,
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+    "pyspark_version": "unset",
+    "python": "3.10.12"
+  },
+  "scale": 1,
+  "schema_version": 1,
+  "workloads": [
+    "tpch_read"
+  ]
+}

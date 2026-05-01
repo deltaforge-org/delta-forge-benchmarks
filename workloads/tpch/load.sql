@@ -1,0 +1,10 @@
+-- Load TPC-H Parquet into Delta tables.
+--
+-- Phase 1 placeholder. Phase 2 wires up COPY INTO from
+-- /workspace/data/tpch_sf<scale>/<table>.parquet for each of the 8 tables,
+-- followed by engine-specific optimizations (Z-ORDER for Delta Forge,
+-- OPTIMIZE for Spark) whose wall-clock time is recorded in manifest.json
+-- under load_phase.<engine>.
+--
+-- Both engines read the same Parquet bytes (verified by SHA-256 in the
+-- manifest). This file is the only place where loading paths diverge.
