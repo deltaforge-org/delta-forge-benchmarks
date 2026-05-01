@@ -54,7 +54,7 @@ su -p -s /bin/bash postgres -c "${PGBIN}/psql -p ${PGPORT} -tAc \"SELECT 1 FROM 
 
 echo "[entrypoint] postgres ready: postgres://${PGUSER_DF}@127.0.0.1:${PGPORT}/${PGDB_DF}"
 
-# ----- 2. Delta Forge headless bootstrap env contract -------------------------
+# ----- 2. DeltaForge headless bootstrap env contract -------------------------
 #
 # Source: delta-forge-bootstrap/src/inputs.rs:12-23
 # Only the three required vars are set unconditionally; optional ones are

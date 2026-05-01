@@ -14,7 +14,7 @@ measure that statement only. The 1% rows are deterministic (modulo of
 l_orderkey + l_linenumber) so the result is reproducible across engines.
 
 Engine portability note: Spark accepts the standard SQL MERGE INTO
-syntax against Delta tables. Delta Forge is expected to as well; if
+syntax against Delta tables. DeltaForge is expected to as well; if
 the dialects diverge, this workload picks up the difference and the
 runner will report engine-specific errors rather than silently skipping.
 """

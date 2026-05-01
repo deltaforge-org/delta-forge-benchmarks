@@ -81,7 +81,7 @@ SCALE_DISK_GB_BUDGET = {1: 4, 10: 40, 30: 120, 100: 400, 300: 1200, 1000: 4000}
 
 # Minimum RAM (host or cgroup) we recommend for a scale factor. SF=10 with
 # `spark-default` (4 GB driver) will OOM on lineitem; we surface that as a
-# warning, not an error, because Delta Forge handles it fine and "Spark OOMs
+# warning, not an error, because DeltaForge handles it fine and "Spark OOMs
 # at this scale with default config" is itself a finding worth publishing.
 SCALE_RAM_GB_RECOMMENDED = {1: 8, 10: 16, 30: 32, 100: 96, 300: 256, 1000: 512}
 
@@ -431,7 +431,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="bench_runner",
-        description="Delta Forge vs Spark benchmark harness.",
+        description="DeltaForge vs Spark benchmark harness.",
     )
     p.add_argument("--scale", type=int,
                    default=int(os.environ.get("BENCH_SCALE_FACTOR", "1")),

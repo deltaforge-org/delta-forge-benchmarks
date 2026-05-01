@@ -3,16 +3,16 @@
 # Layers (top to bottom):
 #   - Eclipse Temurin JDK 17 (Spark 4.0 requirement)
 #   - Python 3.11 + pip
-#   - PostgreSQL 15 (catalog DB for Delta Forge headless bootstrap)
+#   - PostgreSQL 15 (catalog DB for DeltaForge headless bootstrap)
 #   - PySpark 4.0.0 + delta-spark 4.0.0 (pinned via build args)
 #   - DuckDB Python (TPC-H data via the duckdb tpch extension)
-#   - Delta Forge binaries: delta-forge-cli, delta-forge-server, delta-forge-worker
+#   - DeltaForge binaries: delta-forge-cli, delta-forge-server, delta-forge-worker
 #     (consumed from ./build/df-bins/, see README "Building the bench image")
 #
 # This image is the unit reviewers reproduce. Pinning every version explicitly
 # is a non-negotiable trust signal.
 #
-# Why apt Postgres rather than embedded-pg: Delta Forge's bootstrap supports
+# Why apt Postgres rather than embedded-pg: DeltaForge's bootstrap supports
 # both DbChoice::Embedded (desktop) and DbChoice::External (cloud / container).
 # In a container the External path is the documented one (see
 # delta-forge/docs/design/bootstrap.md "Headless / Cloud"). Apt-installed
@@ -66,7 +66,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # Postgres 15 from the official PGDG repository so the version is pinned
 # regardless of which Ubuntu base layer is in use. `gpg` is also installed
-# here because the bench image GPG-verifies every Delta Forge release tarball
+# here because the bench image GPG-verifies every DeltaForge release tarball
 # it pulls from deltaforge-org against the bundled release public key.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -110,7 +110,7 @@ RUN python -m pip install --upgrade pip \
         "Jinja2==3.1.4"
 
 # =============================================================================
-# Delta Forge engine binaries
+# DeltaForge engine binaries
 # =============================================================================
 #
 # Two acquisition paths, both deterministic:

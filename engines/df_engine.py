@@ -1,4 +1,4 @@
-"""Delta Forge engine adapter (Phase 2 stub).
+"""DeltaForge engine adapter (Phase 2 stub).
 
 Phase 1 only declares the class so `bench_runner.py` can register it. The
 real implementation lands in Phase 2: spawn `delta-forge-server` (control)

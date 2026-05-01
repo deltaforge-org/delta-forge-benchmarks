@@ -7,7 +7,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - Repository skeleton (Phase 1).
-- Single-image Docker layout: bench harness, Delta Forge engine binaries, PostgreSQL 15 (apt PGDG), and Spark 4.0 all in one container.
+- Single-image Docker layout: bench harness, DeltaForge engine binaries, PostgreSQL 15 (apt PGDG), and Spark 4.0 all in one container.
 - Apt-installed PostgreSQL 15 inside the bench image, replacing the earlier embedded-pg plan. The container's entrypoint owns the Postgres lifecycle so first-run is deterministic.
 - Bench entrypoint script (`docker/bench-entrypoint.sh`) implementing the headless bootstrap contract from `delta-forge-bootstrap/src/inputs.rs`: starts Postgres, creates role + DB, sets `DELTA_FORGE_DB_URL`/`ADMIN_PASSWORD`/`ENGINEER_PASSWORD`, starts `delta-forge-server`, waits for `:3000/health`, starts `delta-forge-worker`, then `exec`s the user CMD.
 - Privileged `dropcaches` sidecar for OS page-cache flushing between cold runs.
@@ -64,7 +64,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Pending for v0.1.0
 - (Engine repo) Add `server` to `DEFAULT_COMPONENTS` in `scripts/build-release.sh` so `delta-forge-server` ships in every release. Once landed, the bench publish workflow drops its source-build step.
-- Delta Forge engine adapter (`engines/df_engine.py`): swap the stub for real subprocess driving against a running `delta-forge-server` + `delta-forge-worker` (started by `docker/bench-entrypoint.sh`).
+- DeltaForge engine adapter (`engines/df_engine.py`): swap the stub for real subprocess driving against a running `delta-forge-server` + `delta-forge-worker` (started by `docker/bench-entrypoint.sh`).
 - First end-to-end published run at SF=1 and SF=10 on the documented reference hardware.
 - TPC-H data generator rewritten on top of DuckDB's `tpch` extension.
 - Engine adapters: `df_engine.py`, `spark_default_engine.py`, `spark_tuned_engine.py`.
@@ -78,6 +78,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Initial public release.
 - Workload: TPC-H scale factor 1 (1 GB) and scale factor 10 (10 GB), all 22 queries, 1 cold + 9 warm runs each.
-- Engines compared: Delta Forge, Spark with stock-default config, Spark with tuned config.
+- Engines compared: DeltaForge, Spark with stock-default config, Spark with tuned config.
 - Reference hardware: documented in `README.md`.
-- Honest-losses section: queries where Delta Forge ties or loses are listed in the executive summary, not buried.
+- Honest-losses section: queries where DeltaForge ties or loses are listed in the executive summary, not buried.

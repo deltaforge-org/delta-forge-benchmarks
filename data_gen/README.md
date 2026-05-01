@@ -19,7 +19,7 @@ exits with a clear error at runtime.
 
 ## Why DuckDB in the middle
 
-dbgen produces pipe-delimited `.tbl` files. Both Spark and Delta Forge can
+dbgen produces pipe-delimited `.tbl` files. Both Spark and DeltaForge can
 read text files, but the resulting Parquet bytes would differ slightly
 (column statistics, page sizes) depending on which engine wrote them. To
 eliminate that as a source of variance, we pin **one** writer (DuckDB) with

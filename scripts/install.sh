@@ -6,9 +6,9 @@
 #   - Python venv at .venv/ with pinned deps from requirements.txt
 #
 # What it does NOT install:
-#   - Postgres (only the Delta Forge engine path needs it; install separately
+#   - Postgres (only the DeltaForge engine path needs it; install separately
 #     if/when you wire DF in).
-#   - Delta Forge engine binaries themselves.
+#   - DeltaForge engine binaries themselves.
 #
 # Tested distros: Ubuntu 22.04 / 24.04, Debian 12.
 #

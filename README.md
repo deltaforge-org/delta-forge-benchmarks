@@ -1,6 +1,6 @@
 # delta-forge-benchmarks
 
-A reproducible, scripted, single-host benchmark suite comparing **Delta Forge**
+A reproducible, scripted, single-host benchmark suite comparing **DeltaForge**
 against **Apache Spark** on the TPC-H workload. Designed to survive hostile
 reading: every input is deterministic, every artifact is published, every
 configuration is auditable.
@@ -20,7 +20,7 @@ your own machine that are directly comparable to the numbers we publish under
 `results/`.
 
 **This is not** a marketing benchmark. There is no cherry-picking. Queries
-where Delta Forge ties or loses are reported in the executive summary, by
+where DeltaForge ties or loses are reported in the executive summary, by
 name, with the slowdown factor.
 
 ## Design invariants (non-negotiable)
@@ -35,12 +35,12 @@ release blocker.
    `manifest.json`. The benchmark never reads from a CDC feed, a Kafka topic,
    a network stream, or anything time-varying. Both engines read **identical
    bytes** from the same on-disk files.
-2. **One engine runs at a time.** The harness never co-runs Delta Forge and
+2. **One engine runs at a time.** The harness never co-runs DeltaForge and
    Spark. Whichever engine is active gets the container's full CPU and memory
    budget.
 3. **Identical sandbox.** Both engines run inside the same Docker image with
    the same `--cpus` and `--memory` limits. There is no Spark-specific
-   privilege, mount, or network advantage that Delta Forge does not also have.
+   privilege, mount, or network advantage that DeltaForge does not also have.
 4. **Explicit state purge between engines.** Engine processes are killed,
    `/tmp` is cleared, and the host OS page cache is dropped (via the
    privileged `dropcaches` sidecar) before any cold run. Runs where the page
@@ -53,8 +53,7 @@ release blocker.
    `engines/spark_default_engine.py` and `engines/spark_tuned_engine.py`,
    reproduced verbatim in this README under "Spark configurations" once v0.1
    ships.
-6. **Honest losses.** Every query result is reported. Queries where Delta
-   Forge p95 > Spark p95 by more than 5% are listed in the executive summary,
+6. **Honest losses.** Every query result is reported. Queries where DeltaForge p95 > Spark p95 by more than 5% are listed in the executive summary,
    not buried in a table.
 7. **Open license.** Apache 2.0. Anyone may run, modify, and republish
    results.
@@ -271,7 +270,7 @@ Every tagged image is built deterministically by `.github/workflows/docker-publi
 on a clean GitHub Actions runner. The manifest of the published image
 includes:
 - the bench repo commit SHA (`org.opencontainers.image.revision`)
-- the Delta Forge engine commit SHA (`com.deltaforge.engine.revision`)
+- the DeltaForge engine commit SHA (`com.deltaforge.engine.revision`)
 - the build date
 
 You can confirm an image's provenance with `docker inspect deltaforge/benchmarks:vX.Y.Z`.
@@ -341,7 +340,7 @@ The script:
   and `--attest type=sbom` (mirroring SQLFlow's flags).
 - Pushes both `deltaforge/benchmarks:<ImageTag>` and `:latest`.
 - Records engine repo, engine version, and engine commit as image labels
-  so reviewers can verify which Delta Forge they are benchmarking.
+  so reviewers can verify which DeltaForge they are benchmarking.
 
 For a build-only smoke test without pushing, add `-NoPush` (the script
 substitutes `--load` so the resulting image lands in your local Docker
@@ -385,7 +384,7 @@ local PowerShell flow above is the v0.1 path.
 | delta-spark | 4.0.0 | Apache 2.0 |
 | DuckDB (Python) | pinned in `Dockerfile` | MIT |
 | deltalake (Python) | pinned in `Dockerfile` | Apache 2.0 |
-| Delta Forge binaries | from build args; recorded as `DF_GIT_SHA` | Delta Forge Community License |
+| DeltaForge binaries | from build args; recorded as `DF_GIT_SHA` | DeltaForge Community License |
 
 The image is **not** a runtime endorsed by the Apache Spark or Delta Lake
 projects; it bundles their official PyPI distributions for benchmark
@@ -403,7 +402,7 @@ the `org.opencontainers.image.licenses` label on the published image.
   `results/v0.1.0-baseline/` were produced on the documented reference box;
   your numbers depend on your CPU, RAM, disk, kernel, and noisy neighbors.
 - **Not guaranteed.** That the engine binaries inside this image are the
-  most recent Delta Forge release. They are the engine commit listed in the
+  most recent DeltaForge release. They are the engine commit listed in the
   tag's manifest. We publish a new bench image whenever the engine ships a
   release we want benchmarked.
 
@@ -415,7 +414,7 @@ We use the canonical 22 TPC-H queries (`workloads/tpch/queries/q01.sql`
 through `q22.sql`). Schema is the standard 8 tables (lineitem, orders,
 customer, supplier, part, partsupp, nation, region). Both engines load
 the same Parquet files into Delta-format tables. Engine-specific
-optimizations (Z-order on Delta Forge, OPTIMIZE on Spark) are run if
+optimizations (Z-order on DeltaForge, OPTIMIZE on Spark) are run if
 the engine supports them, with the wall-clock time recorded in the
 load-phase row of `manifest.json`.
 
@@ -464,7 +463,7 @@ from the cold-time aggregate.
 .
 ├── bench_runner.py              # main entry point
 ├── engines/
-│   ├── df_engine.py             # Delta Forge: drives delta-forge-cli + control + worker
+│   ├── df_engine.py             # DeltaForge: drives delta-forge-cli + control + worker
 │   ├── spark_default_engine.py  # Spark with stock-OSS defaults
 │   ├── spark_tuned_engine.py    # Spark with AQE + tuned shuffle partitions + executor memory
 │   ├── _spark_session.py        # vendored from delta-forge engine repo, pinned at DF_GIT_SHA
