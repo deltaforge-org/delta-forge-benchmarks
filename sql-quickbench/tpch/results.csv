@@ -1,0 +1,5 @@
+timestamp,git_sha,scale_factor,engine,query,run,seconds,note
+2026-05-02T03:18:35,63e1de6,1,df,q01,prime,FAIL,
+2026-05-02T03:18:35,63e1de6,1,df,q03,prime,FAIL,
+2026-05-02T03:18:35,63e1de6,1,df,q06,prime,FAIL,
+2026-05-02T03:18:35,63e1de6,1,df,q10,prime,FAIL,

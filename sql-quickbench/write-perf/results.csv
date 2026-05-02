@@ -5,3 +5,6 @@ timestamp,git_sha,script,seconds,bytes,rows,files,note
 2026-05-01T12:14:24,4c4c83562,duckdb_copy,22.056,285076148,5000000,1,after writer fix: snappy+dict on both paths
 2026-05-01T12:14:24,4c4c83562,df_ctas,12.910,343739591,5000000,,after writer fix: snappy+dict on both paths
 2026-05-01T12:14:24,4c4c83562,df_insert,33.735,224007497,5000000,,after writer fix: snappy+dict on both paths
+2026-05-02T00:23:48,63e1de6,duckdb_copy,19.670,285076148,5000000,1,
+2026-05-02T00:23:48,63e1de6,df_ctas,12.494,343739271,5000000,,
+2026-05-02T00:23:48,63e1de6,df_insert,32.243,224447594,5000000,,
