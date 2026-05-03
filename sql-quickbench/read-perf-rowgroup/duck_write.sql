@@ -7,8 +7,10 @@
 -- against pbi.bench.dim_customer_insert (which DF wrote itself) is
 -- attributable to row-group quality and not to the read engine.
 
-.shell rm -rf B:/odbc_df/df-demo/perf_test/dim_customer_duck
-.shell mkdir -p B:/odbc_df/df-demo/perf_test/dim_customer_duck
+-- Caller (run.sh) is responsible for clearing and re-creating
+-- B:/odbc_df/df-demo/perf_test/dim_customer_duck before this script runs;
+-- DuckDB's .shell on Windows dispatches to cmd.exe and `mkdir -p` is not
+-- valid there, so we don't try to do it inline.
 
 .timer on
 

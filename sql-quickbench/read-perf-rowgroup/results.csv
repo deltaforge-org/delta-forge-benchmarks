@@ -1,0 +1,13 @@
+timestamp,git_sha,engine,table_source,query,run,seconds,note
+2026-05-02T10:31:01,df4a3a6,df,df_written,q1_count,1,1.768,
+2026-05-02T10:31:01,df4a3a6,df,duck_written,q1_count,1,14.473,
+2026-05-02T10:31:01,df4a3a6,duck,duck_written,q1_count,1,0.545,
+2026-05-02T11:30:34,df4a3a6,df,df_written,q1_count,1,1.545,
+2026-05-02T11:30:34,df4a3a6,df,duck_written,q1_count,1,2.335,
+2026-05-02T11:30:34,df4a3a6,duck,duck_written,q1_count,1,0.482,
+2026-05-02T11:30:34,df4a3a6,df,df_written,q2_agg,1,1.668,
+2026-05-02T11:30:34,df4a3a6,df,duck_written,q2_agg,1,2.275,
+2026-05-02T11:30:34,df4a3a6,duck,duck_written,q2_agg,1,0.427,
+2026-05-02T11:30:34,df4a3a6,df,df_written,q3_topk,1,2.005,
+2026-05-02T11:30:34,df4a3a6,df,duck_written,q3_topk,1,2.589,
+2026-05-02T11:30:34,df4a3a6,duck,duck_written,q3_topk,1,0.525,

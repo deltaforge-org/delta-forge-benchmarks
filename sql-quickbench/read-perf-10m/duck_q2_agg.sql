@@ -1,12 +1,9 @@
-OPEN DELTA TABLE 'B:/odbc_df/df-demo/perf_test/dim_customer_duck'
-AS dim_customer_duck;
-
 SELECT
   segment,
   COUNT(*)                           AS customers,
   AVG(annual_income_usd)             AS avg_income,
   MAX(loyalty_points_balance)        AS max_points,
   SUM(lifetime_revenue_usd)          AS total_revenue
-FROM dim_customer_duck
+FROM read_parquet('B:/odbc_df/df-demo/perf_test/dim_customer_insert_10m/*.parquet')
 GROUP BY segment
 ORDER BY total_revenue DESC;

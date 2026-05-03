@@ -86,10 +86,17 @@ setup_one_shot() {
         echo "[setup] skipped (SKIP_SETUP=1)"
         return
     fi
+    local target="B:/odbc_df/df-demo/perf_test/dim_customer_duck"
+    echo "[setup] clearing $target ..."
+    rm -rf "$target"
+    mkdir -p "$target"
     echo "[setup] DuckDB: writing 5M rows to dim_customer_duck/ ..."
     "$DUCKDB" <"$HERE/duck_write.sql"
-    echo "[setup] DeltaForge: CONVERT TO DELTA + REGISTER TABLE ..."
+    echo "[setup] DeltaForge: CONVERT TO DELTA wraps the duck-written parquet ..."
     "$DF_CLI" --username "$DF_USERNAME" --password "$DF_PASSWORD" -y run "$HERE/df_register.sql"
+    # Each df_q*.sql then opens the Delta-wrapped directory via OPEN DELTA
+    # TABLE in the same CLI invocation; no catalog persistence is needed
+    # for the bench, the alias is session-scoped per query.
 }
 
 bench_query() {

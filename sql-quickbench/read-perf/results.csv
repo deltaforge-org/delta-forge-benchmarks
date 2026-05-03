@@ -161,3 +161,27 @@ timestamp,git_sha,engine,query,run,seconds,note
 2026-05-02T02:54:03,63e1de6,duck,q3_topk,2,0.601,post user tweaks - confirmation run
 2026-05-02T02:54:03,63e1de6,df,q3_topk,3,2.063,post user tweaks - confirmation run
 2026-05-02T02:54:03,63e1de6,duck,q3_topk,3,0.574,post user tweaks - confirmation run
+2026-05-02T11:33:01,df4a3a6,df,q1_count,1,1.543,
+2026-05-02T11:33:01,df4a3a6,duck,q1_count,1,0.490,
+2026-05-02T11:33:01,df4a3a6,df,q2_agg,1,1.743,
+2026-05-02T11:33:01,df4a3a6,duck,q2_agg,1,0.600,
+2026-05-02T11:33:01,df4a3a6,df,q3_topk,1,2.019,
+2026-05-02T11:33:01,df4a3a6,duck,q3_topk,1,0.690,
+2026-05-02T11:40:10,df4a3a6,df,q1_count,1,1.581,3-run variance
+2026-05-02T11:40:10,df4a3a6,duck,q1_count,1,0.498,3-run variance
+2026-05-02T11:40:10,df4a3a6,df,q1_count,2,1.598,3-run variance
+2026-05-02T11:40:10,df4a3a6,duck,q1_count,2,0.498,3-run variance
+2026-05-02T11:40:10,df4a3a6,df,q1_count,3,1.600,3-run variance
+2026-05-02T11:40:10,df4a3a6,duck,q1_count,3,0.488,3-run variance
+2026-05-02T11:40:10,df4a3a6,df,q2_agg,1,1.796,3-run variance
+2026-05-02T11:40:10,df4a3a6,duck,q2_agg,1,0.521,3-run variance
+2026-05-02T11:40:10,df4a3a6,df,q2_agg,2,1.812,3-run variance
+2026-05-02T11:40:10,df4a3a6,duck,q2_agg,2,0.584,3-run variance
+2026-05-02T11:40:10,df4a3a6,df,q2_agg,3,1.718,3-run variance
+2026-05-02T11:40:10,df4a3a6,duck,q2_agg,3,0.613,3-run variance
+2026-05-02T11:40:10,df4a3a6,df,q3_topk,1,2.116,3-run variance
+2026-05-02T11:40:10,df4a3a6,duck,q3_topk,1,0.670,3-run variance
+2026-05-02T11:40:10,df4a3a6,df,q3_topk,2,1.994,3-run variance
+2026-05-02T11:40:10,df4a3a6,duck,q3_topk,2,0.651,3-run variance
+2026-05-02T11:40:10,df4a3a6,df,q3_topk,3,2.174,3-run variance
+2026-05-02T11:40:10,df4a3a6,duck,q3_topk,3,0.556,3-run variance
