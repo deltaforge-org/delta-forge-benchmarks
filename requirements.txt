@@ -22,6 +22,11 @@ deltalake==0.22.3
 # System metrics: process-tree RSS + CPU sampling during measured steps.
 psutil==6.1.0
 
+# Neo4j Bolt driver: client for the graph_finance workload's neo4j adapter.
+# Pinned to the same major as the docker-compose neo4j service (5.x); the
+# 5.x driver is forward-compatible with newer 5.x server releases.
+neo4j==5.26.0
+
 # Reporting: pandas for the optional summary frame, matplotlib + plotly for
 # charts. The minimal report.md generator works without any of these but
 # they ship by default so the report harness has them when needed.

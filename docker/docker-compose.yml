@@ -17,6 +17,64 @@
 # Run a bench: `docker compose exec bench python bench_runner.py --scale ${BENCH_SCALE_FACTOR}`
 
 services:
+  # ---------------------------------------------------------------------
+  # neo4j: Community 5.x + GDS Community plugin.
+  #
+  # Driven by the Neo4jEngine adapter (engines/neo4j_engine.py) over Bolt
+  # at 7687. The graph_finance workload's load_neo4j.cypher reads CSVs
+  # from /import inside this container, which we mount from the bench's
+  # data/graph_finance_sf<scale>/ directory on the host (same files the
+  # DeltaForge side reads as parquet).
+  #
+  # NEO4J_AUTH must match NEO4J_PASSWORD on the bench service; the adapter
+  # connects with user 'neo4j' and that password. Default is a known
+  # local-only string; override via the .env file on shared hosts.
+  # ---------------------------------------------------------------------
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: bench-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-bench_neo4j_local}
+      # GDS Community plugin auto-installed at startup.
+      NEO4J_PLUGINS: '["graph-data-science"]'
+      # Heap + page-cache sized for the laptop standard tier (1M nodes /
+      # 5M edges). Bump these for the at-scale tier; the README has the
+      # recommended values per scale.
+      NEO4J_server_memory_heap_initial__size: ${NEO4J_HEAP:-4G}
+      NEO4J_server_memory_heap_max__size:     ${NEO4J_HEAP:-4G}
+      NEO4J_server_memory_pagecache_size:     ${NEO4J_PAGECACHE:-4G}
+      # GDS requires this so its procedures (gds.pageRank.stream,
+      # gds.wcc.stream, ...) are exposed over Bolt.
+      NEO4J_dbms_security_procedures_unrestricted: 'gds.*'
+      NEO4J_dbms_security_procedures_allowlist:    'gds.*'
+      # LOAD CSV needs to read from the import dir; the bench mounts the
+      # generated dataset there at runtime.
+      NEO4J_dbms_security_allow__csv__import__from__file__urls: 'true'
+    ports:
+      # Bolt only; HTTP UI is intentionally not exposed because the bench
+      # talks to Neo4j over Bolt and exposing 7474 invites accidental
+      # public access.
+      - "${NEO4J_BOLT_PORT:-7687}:7687"
+    volumes:
+      - bench_neo4j_data:/data
+      - bench_neo4j_logs:/logs
+      - bench_neo4j_plugins:/plugins
+      # Bind-mount the bench's data dir at Neo4j 5's default import dir
+      # (/var/lib/neo4j/import). Files at
+      #   <bench-repo>/data/graph_finance_sfN/accounts.csv
+      # become accessible inside the container as
+      #   file:///graph_finance_sfN/accounts.csv
+      # The workload's load_neo4j.cypher uses a {scale} placeholder the
+      # bench runner substitutes at execution time.
+      - ../data:/var/lib/neo4j/import:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
   dropcaches:
     build:
       context: ..
@@ -44,6 +102,7 @@ services:
     container_name: bench
     depends_on:
       - dropcaches
+      - neo4j
     # Resource limits enforced. These apply to whichever engine is currently
     # active inside the container. See README "Fairness contract".
     deploy:
@@ -75,6 +134,14 @@ services:
       PGUSER: deltaforge
       PGDATABASE: deltaforge
       PGPASSWORD: ${PGPASSWORD:-deltaforge_local}
+      # Neo4j Bolt endpoint for the Neo4jEngine adapter. The bench reaches
+      # the neo4j service over the compose-managed bridge network at the
+      # service name `neo4j`. Password must match NEO4J_AUTH on the neo4j
+      # service.
+      NEO4J_BOLT_URL: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-bench_neo4j_local}
+      NEO4J_DATABASE: neo4j
       # Worker -> control plane wiring (delta-forge-compute/src/bin/worker.rs).
       CONTROL_PLANE_URL: http://127.0.0.1:3000
       BIND_HOST: 127.0.0.1
@@ -110,4 +177,13 @@ volumes:
   # Engine logs (control plane, worker, postgres). Bench harness copies
   # these into per-run results/ directories.
   bench_logs:
+    driver: local
+  # Neo4j volumes. `data` holds the graph store; `logs` is the server
+  # log; `plugins` is where the GDS jar lands at first start. Wipe `data`
+  # to force a fresh load.
+  bench_neo4j_data:
+    driver: local
+  bench_neo4j_logs:
+    driver: local
+  bench_neo4j_plugins:
     driver: local

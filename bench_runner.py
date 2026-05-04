@@ -36,6 +36,7 @@ import importlib
 import json
 import os
 import platform
+import re
 import socket
 import subprocess
 import sys
@@ -52,6 +53,7 @@ ENGINE_REGISTRY = {
     "spark-default": ("engines.spark_default_engine", "SparkDefaultEngine"),
     "spark-tuned":   ("engines.spark_tuned_engine",   "SparkTunedEngine"),
     "df":            ("engines.df_engine",            "DeltaForgeEngine"),
+    "neo4j":         ("engines.neo4j_engine",         "Neo4jEngine"),
 }
 
 
@@ -189,17 +191,39 @@ def build_results_dir(parent: Path, tag: str | None) -> Path:
 # Step execution: substitute placeholders, run, record
 # ---------------------------------------------------------------------------
 
-def resolve_step(step, data_dir: Path):
-    """Substitute `{data_dir}` and `{scale}` placeholders in step.sql."""
-    from engines.base import WorkloadStep
-
-    if step.sql is None:
-        return step
-    new_sql = step.sql.format(data_dir=str(data_dir))
-    return dataclasses.replace(step, sql=new_sql)
+# Limited placeholder set: ONLY these three names get substituted. We do
+# not use str.format() because Cypher map literals (`{key: value}`) and
+# str.format()'s field syntax collide. A regex over a known allowlist
+# keeps the substitution lossless against arbitrary Cypher / SQL.
+_PLACEHOLDER_RE = re.compile(r"\{(data_dir|data_basename|scale)\}")
 
 
-def run_workload(engine, workload, data_dir: Path, raw_dir: Path,
+def resolve_step(step, data_dir: Path, engine_name: str, scale: int):
+    """Resolve a step for a specific engine: pick the per-engine kind/sql
+    variants if the workload provided them, then substitute the three
+    runner-managed placeholders (``{data_dir}``, ``{data_basename}``,
+    ``{scale}``).
+    """
+    sql = step.sql
+    kind = step.kind
+    if step.per_engine_sql and engine_name in step.per_engine_sql:
+        sql = step.per_engine_sql[engine_name]
+    if step.per_engine_kind and engine_name in step.per_engine_kind:
+        kind = step.per_engine_kind[engine_name]
+
+    if sql is None:
+        return dataclasses.replace(step, kind=kind)
+
+    values = {
+        "data_dir": str(data_dir).replace("\\", "/"),
+        "data_basename": Path(data_dir).name,
+        "scale": str(scale),
+    }
+    new_sql = _PLACEHOLDER_RE.sub(lambda m: values[m.group(1)], sql)
+    return dataclasses.replace(step, kind=kind, sql=new_sql)
+
+
+def run_workload(engine, workload, data_dir: Path, scale: int, raw_dir: Path,
                  cold_purge_fn=None) -> list[dict]:
     """Run one workload on one engine. Returns list of per-step JSON records."""
     records: list[dict] = []
@@ -207,7 +231,7 @@ def run_workload(engine, workload, data_dir: Path, raw_dir: Path,
     print(f"  [setup] {len(workload.setup_steps)} steps")
     setup_ms_total = 0.0
     for step in workload.setup_steps:
-        resolved = resolve_step(step, data_dir)
+        resolved = resolve_step(step, data_dir, engine.name, scale)
         result = engine.run_step(resolved)
         setup_ms_total += result.wall_ms
         if result.exit_code != 0:
@@ -228,7 +252,7 @@ def run_workload(engine, workload, data_dir: Path, raw_dir: Path,
                 except Exception as e:
                     print(f"    [warn] purge failed: {e}", file=sys.stderr)
 
-            resolved = resolve_step(step, data_dir)
+            resolved = resolve_step(step, data_dir, engine.name, scale)
             result = engine.run_step(resolved)
             rec = {
                 "workload": workload.name,
@@ -257,12 +281,18 @@ def run_workload(engine, workload, data_dir: Path, raw_dir: Path,
     print(f"  [cleanup] {len(workload.cleanup_steps)} steps")
     cleanup_ms_total = 0.0
     for step in workload.cleanup_steps:
-        resolved = resolve_step(step, data_dir)
+        resolved = resolve_step(step, data_dir, engine.name, scale)
         result = engine.run_step(resolved)
         cleanup_ms_total += result.wall_ms
     print(f"  [cleanup] done in {cleanup_ms_total/1000.0:.2f}s")
 
     return records
+
+
+def workload_data_dir(workload, scale: int) -> Path:
+    """Resolve the staged-data directory for a workload at a given scale."""
+    sub = workload.data_subdir.format(scale=scale)
+    return REPO_ROOT / "data" / sub
 
 
 # ---------------------------------------------------------------------------
@@ -294,13 +324,39 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"engines:   {engines_wanted}")
     print(f"scale:     {args.scale}")
 
-    # Verify data exists. Dry-run skips this so a user can preview the
-    # pre-flight + manifest at any scale without staging data first.
-    data_dir = REPO_ROOT / "data" / f"tpch_sf{args.scale}"
-    data_present = data_dir.exists() and bool(list(data_dir.glob("*.parquet")))
-    if not data_present and not args.dry_run:
-        sys.exit(f"error: no parquet under {data_dir}. "
-                 f"run `python data_gen/generate_tpch.py --scale {args.scale}` first.")
+    # Verify staged data exists for every workload that will run. Each
+    # workload declares its own `data_subdir` (TPC-H workloads default to
+    # `tpch_sf{scale}`, the graph workload uses `graph_finance_sf{scale}`).
+    # Dry-run skips the check so a user can preview manifest.json without
+    # staging data first.
+    workload_data: dict[str, Path] = {
+        wl.name: workload_data_dir(wl, args.scale) for wl in workloads_to_run
+    }
+    if not args.dry_run:
+        missing: list[str] = []
+        for wl in workloads_to_run:
+            d = workload_data[wl.name]
+            if not (d.exists() and any(d.rglob("*.parquet"))):
+                missing.append(f"{wl.name} -> {d}")
+        if missing:
+            print("error: missing staged data for:", file=sys.stderr)
+            for line in missing:
+                print(f"  {line}", file=sys.stderr)
+            print(
+                "\nGenerate it first. Examples:\n"
+                f"  python data_gen/generate_tpch.py --scale {args.scale}\n"
+                f"  python data_gen/generate_graph_finance.py --scale {args.scale}\n",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+    # First TPC-H workload's data dir (or the first workload's, if no TPC-H)
+    # is used for the host-facts disk-throughput probe. Pick a stable one.
+    primary_data_dir = next(
+        (workload_data[wl.name] for wl in workloads_to_run
+         if wl.data_subdir.startswith("tpch_sf")),
+        workload_data[workloads_to_run[0].name] if workloads_to_run else REPO_ROOT,
+    )
+    data_dir = primary_data_dir
 
     # Build the run directory.
     out_dir = build_results_dir(Path(args.results_dir), args.tag)
@@ -327,13 +383,16 @@ def cmd_run(args: argparse.Namespace) -> int:
     # Manifest with host + data facts. Engine version_info is appended as
     # each engine starts.
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "scale": args.scale,
         "engines": engines_wanted,
         "workloads": [w.name for w in workloads_to_run],
         "host": host_facts,
         "preflight_issues": issues,
-        "data_hashes": hash_data_dir(data_dir),
+        "data_hashes_by_workload": {
+            wl.name: hash_data_dir(workload_data[wl.name])
+            for wl in workloads_to_run
+        },
         "engine_versions": {},
         "cold_starts": {},
     }
@@ -348,12 +407,33 @@ def cmd_run(args: argparse.Namespace) -> int:
                 "spark-tuned":   ["pyspark", "java.*spark"],
                 "df":            ["delta-forge-cli", "delta-forge-server",
                                   "delta-forge-worker"],
+                # The neo4j JVM runs in a separate compose container; pkill
+                # from the bench container does not see its PIDs. The
+                # _purge module also handles Neo4j via a Bolt-side
+                # `CALL db.clearQueryCaches()` for in-process invalidation
+                # plus a docker-restart fallback when DOCKER_SOCK is
+                # mounted; see engines/_purge.py.
+                "neo4j":         [],
             }
             def cold_purge_fn():
-                # Engine-specific patterns. Used by the cold-run purge.
-                # The current engine name is captured by closure below.
-                from engines._purge import purge_for_cold_run
-                return purge_for_cold_run(engine_patterns.get(current_engine_name, []))
+                # Engine-specific cold-run sequence. The current engine name
+                # is captured by closure below.
+                from engines._purge import (
+                    purge_for_cold_run,
+                    purge_neo4j_caches,
+                )
+                result = purge_for_cold_run(
+                    engine_patterns.get(current_engine_name, [])
+                )
+                # Neo4j needs an extra Bolt-side cache clear because its
+                # JVM runs in a separate compose container.
+                if current_engine_name == "neo4j":
+                    ok, msg = purge_neo4j_caches()
+                    # Append the neo4j-specific result into the existing
+                    # PurgeResult message stream so the per-run JSON has
+                    # the full audit trail.
+                    result.processes_killed.append(f"neo4j_caches:ok={ok}:{msg}")
+                return result
         except ImportError:
             pass
 
@@ -397,10 +477,18 @@ def cmd_run(args: argparse.Namespace) -> int:
 
         records: list[dict] = []
         for workload in workloads_to_run:
+            if (workload.applicable_engines is not None
+                    and engine_name not in workload.applicable_engines):
+                print(f"\n--- workload: {workload.name} (skipped on {engine_name}; "
+                      f"applicable_engines={list(workload.applicable_engines)}) ---")
+                continue
             print(f"\n--- workload: {workload.name} ---")
             try:
                 records.extend(
-                    run_workload(engine, workload, data_dir, raw_dir, cold_purge_fn)
+                    run_workload(
+                        engine, workload, workload_data[workload.name],
+                        args.scale, raw_dir, cold_purge_fn,
+                    )
                 )
             except Exception as e:
                 print(f"workload {workload.name} on {engine_name} failed: {e}",

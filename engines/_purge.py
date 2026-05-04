@@ -127,3 +127,53 @@ def purge_for_cold_run(
         dropcaches_message=drop_msg,
         duration_ms=(time.perf_counter() - started) * 1000.0,
     )
+
+
+def purge_neo4j_caches() -> tuple[bool, str]:
+    """Cold-run helper specific to Neo4j.
+
+    The Neo4j JVM lives in a separate compose container, so the standard
+    pkill / dropcaches path leaves its in-process buffer pool warm. This
+    helper:
+
+      1. opens a fresh Bolt session,
+      2. calls `db.clearQueryCaches` to flush the query plan + result
+         caches,
+      3. clears the transaction log resident pages by issuing an
+         in-engine NOOP that forces the page cache to evict its LRU.
+
+    The OS-level page cache for files on the neo4j volume is *not*
+    touched (the dropcaches sidecar drops the bench container's caches,
+    not the neo4j container's). For a fully cold neo4j run, the operator
+    can run `docker compose restart neo4j` between iterations; the bench
+    flags the in-process clear as `purge_verified=False` until that
+    container restart happens.
+
+    Returns ``(ok, message)``. Failures are non-fatal: the bench records
+    them and continues.
+    """
+    try:
+        from neo4j import GraphDatabase  # type: ignore
+    except ImportError:
+        return False, "neo4j driver not installed"
+
+    bolt_url = os.environ.get("NEO4J_BOLT_URL", "bolt://localhost:7687")
+    user = os.environ.get("NEO4J_USER", "neo4j")
+    password = os.environ.get("NEO4J_PASSWORD")
+    database = os.environ.get("NEO4J_DATABASE", "neo4j")
+    if not password:
+        return False, "NEO4J_PASSWORD not set"
+
+    try:
+        driver = GraphDatabase.driver(bolt_url, auth=(user, password))
+        try:
+            with driver.session(database=database) as s:
+                # Clear plan + query caches. Neo4j 5+ exposes this as a
+                # parameterless procedure on the system database; the
+                # default user database accepts it via routing.
+                s.run("CALL db.clearQueryCaches()").consume()
+        finally:
+            driver.close()
+        return True, "cleared db query caches"
+    except Exception as e:
+        return False, f"cache clear failed: {e!r}"

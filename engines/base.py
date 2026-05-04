@@ -32,6 +32,15 @@ STEP_SQL_DDL = "sql_ddl"          # CREATE/DROP/ALTER; no result rows
 STEP_MAINTENANCE = "maintenance"  # OPTIMIZE/VACUUM/ANALYZE; engine-specific
 STEP_PYTHON = "python"            # arbitrary Python; non-portable, used for
                                    # data-prep steps that aren't SQL
+STEP_CYPHER_QUERY = "cypher_query"  # MATCH/CALL ... YIELD ... RETURN ; rows fingerprinted
+STEP_CYPHER_DML = "cypher_dml"      # CREATE/MERGE/DELETE/SET in Cypher; no rows
+
+# All step kinds that carry textual SQL (substituted for {data_dir} placeholders
+# by the runner). Cypher kinds use the same SQL field for the query text.
+SQL_TEXT_KINDS = (
+    STEP_SQL_QUERY, STEP_SQL_DML, STEP_SQL_DDL, STEP_MAINTENANCE,
+    STEP_CYPHER_QUERY, STEP_CYPHER_DML,
+)
 
 
 @dataclasses.dataclass
@@ -47,9 +56,25 @@ class WorkloadStep:
     / STEP_PYTHON."""
 
     sql: str | None = None
-    """SQL text. Required for the four SQL kinds. The adapter is responsible
+    """Query text. Required for SQL kinds and Cypher kinds. The same field
+    carries Cypher when `kind` is STEP_CYPHER_*; the field is named `sql`
+    only because the runner already calls it that. Adapters dispatch on
+    `kind` to decide how to execute the text. The adapter is responsible
     for any engine-specific dialect translation, but should aim to run the
     text as-is when possible."""
+
+    per_engine_sql: dict[str, str] | None = None
+    """Optional per-engine override of `sql`. When the runner resolves a step
+    for a specific engine and the engine's name appears as a key here, the
+    adapter sees that variant in `step.sql` instead of the default. Used by
+    workloads where the same logical step has divergent dialect (e.g. DF
+    Cypher's `algo.pageRank(...)` vs Neo4j GDS's `gds.pageRank.stream(...)`)."""
+
+    per_engine_kind: dict[str, str] | None = None
+    """Optional per-engine override of `kind`. The graph_finance load step
+    is SQL DDL on DF and Cypher DML on Neo4j; the workload sets this dict
+    to ``{'df': STEP_SQL_DDL, 'neo4j': STEP_CYPHER_DML}`` so each adapter
+    sees the kind it accepts."""
 
     fn: Callable[["Engine"], Any] | None = None
     """Python callable for STEP_PYTHON. Receives the engine adapter so it

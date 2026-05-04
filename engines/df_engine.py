@@ -1,22 +1,86 @@
-"""DeltaForge engine adapter (Phase 2 stub).
+"""DeltaForge engine adapter.
 
-Phase 1 only declares the class so `bench_runner.py` can register it. The
-real implementation lands in Phase 2: spawn `delta-forge-server` (control)
-and `delta-forge-worker` (compute) as background processes inside the bench
-container, wait for `/health`, then drive queries via `delta-forge-cli run
---format json` and parse the per-statement `execution_time_ms` field.
+Drives ``delta-forge-cli`` against an already-running control plane +
+compute worker pair. The bench's docker-compose entrypoint
+(``docker/bench-entrypoint.sh``) is responsible for starting Postgres,
+delta-forge-server, and delta-forge-worker; this adapter is a *client*
+to that stack, the same shape as ``Neo4jEngine`` is a client to the
+neo4j compose service.
+
+This is the only adapter that handles both SQL and Cypher steps,
+because DeltaForge is the only engine in the bench that runs both.
+The dispatch is purely on ``step.kind`` because the server's
+``execute_sql`` endpoint accepts either dialect and routes internally.
+
+Run shape
+---------
+
+Every step is a single ``delta-forge-cli --format json query "<text>"``
+invocation. The CLI auths via ``DF_USERNAME`` / ``DF_PASSWORD`` /
+``DF_CONTROL_URL`` env vars (clap recognises these in
+``delta-forge-cli/src/main.rs:33-46``). For ``STEP_*_QUERY`` we parse
+the JSON shape produced by ``output::print_result_table``:
+
+    {
+      "columns":           [str, ...],
+      "rows":              [{col: str_or_null}, ...],
+      "row_count":         int,
+      "execution_time_ms": int,
+    }
+
+For ``STEP_SQL_DDL`` / ``STEP_SQL_DML`` / ``STEP_CYPHER_DML`` /
+``STEP_MAINTENANCE`` the CLI prints ``print_dml_result`` (no JSON), so
+we treat exit-code 0 as success and skip the JSON parse.
+
+Multi-statement scripts (e.g. the workload's load step) are split on
+the same boundary the CLI's own ``run`` subcommand uses (statements
+ending with `;`). Each statement is invoked independently so per-
+statement timings are measurable.
+
+RSS / CPU sampling
+------------------
+
+The DF compute worker is the heavy process; the CLI spawns once per
+step and exits. We sample the worker's process tree via
+``MetricSampler``, locating the worker PID via ``pgrep`` at adapter
+startup. If pgrep does not find a worker (e.g. on a host where the
+operator is running the bench against a remote control plane), RSS/CPU
+are reported as ``None`` and the bench wall-clock + engine-reported
+times remain valid.
 """
 from __future__ import annotations
 
+import json
+import os
+import re
+import shutil
+import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
-from .base import Engine, RunResult
+from .base import (
+    STEP_CYPHER_DML,
+    STEP_CYPHER_QUERY,
+    STEP_MAINTENANCE,
+    STEP_PYTHON,
+    STEP_SQL_DDL,
+    STEP_SQL_DML,
+    STEP_SQL_QUERY,
+    ColdStartMetrics,
+    Engine,
+    StepResult,
+    WorkloadStep,
+)
+from . import _metrics
 
 
-# Process-name patterns for the cold-run purge. These cover the CLI, the
-# control plane, and the worker. `_purge.py` calls `pkill -f` with each
-# pattern; matching nothing is fine, matching everything is fine.
+# Process-name patterns for the cold-run purge. The control plane and
+# worker are kept alive across cold runs (entrypoint owns them); the
+# OS page cache and the worker's in-process buffer pool are what cold
+# actually invalidates here. To get a *fully* cold worker, the operator
+# can `docker compose restart bench` between runs; the bench labels
+# such runs explicitly.
 DF_PROCESS_PATTERNS = [
     "delta-forge-cli",
     "delta-forge-server",
@@ -24,31 +88,381 @@ DF_PROCESS_PATTERNS = [
 ]
 
 
+_DEFAULT_CONTROL_URL = "http://127.0.0.1:3000"
+_DEFAULT_USERNAME = "admin"
+
+
 class DeltaForgeEngine(Engine):
+    """Client to a running delta-forge-server + delta-forge-worker pair."""
+
     name = "df"
 
-    def __init__(self) -> None:
-        # Phase 2: store control_url, compute_url, credentials, paths.
-        pass
+    def __init__(
+        self,
+        cli_path: str | None = None,
+        control_url: str | None = None,
+        username: str | None = None,
+        password: str | None = None,
+    ) -> None:
+        self._cli_path = cli_path or shutil.which("delta-forge-cli") or "delta-forge-cli"
+        self._control_url = (
+            control_url
+            or os.environ.get("DF_CONTROL_URL")
+            or _DEFAULT_CONTROL_URL
+        )
+        self._username = username or os.environ.get("DF_USERNAME") or _DEFAULT_USERNAME
+        # Two env-var sources for the password: DF_PASSWORD (the CLI's own
+        # contract) and DELTA_FORGE_ADMIN_PASSWORD (the bench compose
+        # contract). Whichever is set first wins.
+        self._password = (
+            password
+            or os.environ.get("DF_PASSWORD")
+            or os.environ.get("DELTA_FORGE_ADMIN_PASSWORD")
+        )
+        self._worker_pid: int | None = None
+        self._cli_version: str | None = None
+
+    # ----- lifecycle ---------------------------------------------------------
+
+    def _cli_env(self) -> dict[str, str]:
+        env = os.environ.copy()
+        env["DF_CONTROL_URL"] = self._control_url
+        env["DF_USERNAME"] = self._username
+        if self._password:
+            env["DF_PASSWORD"] = self._password
+        return env
+
+    def _locate_worker_pid(self) -> int | None:
+        """Find delta-forge-worker's PID for RSS/CPU sampling.
+
+        Falls back through `pgrep` (Linux/macOS) then a no-op on platforms
+        without it. The PID is purely for the metric sampler; failing to
+        find one is reported as RSS=None on every step, never an engine
+        failure.
+        """
+        pgrep = shutil.which("pgrep")
+        if not pgrep:
+            return None
+        try:
+            r = subprocess.run(
+                [pgrep, "-f", "delta-forge-worker"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode != 0:
+                return None
+            for line in r.stdout.splitlines():
+                line = line.strip()
+                if line.isdigit():
+                    return int(line)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return None
+
+    def start(self) -> ColdStartMetrics:
+        if not self._password:
+            raise RuntimeError(
+                "DF_PASSWORD (or DELTA_FORGE_ADMIN_PASSWORD) is not set. "
+                "The bench compose stack defines this; for ad-hoc runs, "
+                "export it before invoking bench_runner.py."
+            )
+
+        # Wait for /health to come up. The compose entrypoint starts the
+        # control plane in the background and may not be ready at the
+        # instant the bench harness reaches this code.
+        t0 = time.perf_counter()
+        deadline = t0 + 120.0
+        last_err: str = ""
+        while time.perf_counter() < deadline:
+            try:
+                r = subprocess.run(
+                    [self._cli_path, "health"],
+                    env=self._cli_env(),
+                    capture_output=True, text=True, timeout=10,
+                )
+                if r.returncode == 0:
+                    break
+                last_err = (r.stderr or r.stdout)[:500]
+            except (OSError, subprocess.TimeoutExpired) as e:
+                last_err = repr(e)
+            time.sleep(1.0)
+        else:
+            raise RuntimeError(
+                f"DeltaForge control plane at {self._control_url} not "
+                f"reachable within 120s. last error: {last_err}"
+            )
+        ready_ms = (time.perf_counter() - t0) * 1000.0
+
+        # First-query probe: SELECT 1.
+        t1 = time.perf_counter()
+        probe = subprocess.run(
+            [self._cli_path, "--format", "json", "query", "SELECT 1 AS x"],
+            env=self._cli_env(),
+            capture_output=True, text=True, timeout=30,
+        )
+        first_q_ms = (time.perf_counter() - t1) * 1000.0
+        if probe.returncode != 0:
+            raise RuntimeError(
+                f"DeltaForge SELECT 1 probe failed: {probe.stderr or probe.stdout!r}"
+            )
+
+        # Cache the worker PID once. If the worker restarts mid-run the
+        # sampler will harmlessly observe a dead PID and report RSS=None
+        # for affected steps; a fresh start() re-locates.
+        self._worker_pid = self._locate_worker_pid()
+
+        # Cache CLI version for version_info.
+        try:
+            v = subprocess.run(
+                [self._cli_path, "--version"],
+                capture_output=True, text=True, timeout=5,
+            )
+            self._cli_version = (v.stdout or v.stderr).strip() or "unknown"
+        except (OSError, subprocess.TimeoutExpired):
+            self._cli_version = "unknown"
+
+        return ColdStartMetrics(
+            import_to_session_ready_ms=ready_ms,
+            session_to_first_query_ms=first_q_ms,
+        )
+
+    def stop(self) -> None:
+        # The compose entrypoint owns server + worker. Nothing to stop on
+        # the client side beyond clearing our own state.
+        self._worker_pid = None
+
+    # ----- introspection -----------------------------------------------------
 
     def version_info(self) -> dict[str, Any]:
-        # Phase 2: invoke `delta-forge-cli --version`, capture build SHA from
-        # env DF_GIT_SHA, record control + worker binary versions.
         return {
             "name": self.name,
-            "df_git_sha": "unset",
-            "phase1_stub": True,
+            "control_url": self._control_url,
+            "df_git_sha": os.environ.get("DF_GIT_SHA", "unset"),
+            "cli_path": self._cli_path,
+            "cli_version": self._cli_version or "<not started>",
+            "worker_pid_at_start": self._worker_pid,
         }
 
-    def setup(self, scale: int, data_dir: Path) -> None:
-        raise NotImplementedError("Phase 2: spawn server+worker, run schema.sql + load.sql")
+    # ----- step execution ----------------------------------------------------
 
-    def teardown(self) -> None:
-        raise NotImplementedError("Phase 2: SIGTERM the server+worker, wait, force-kill on timeout")
+    def run_step(self, step: WorkloadStep) -> StepResult:
+        sampler: _metrics.MetricSampler | None = None
+        if self._worker_pid is not None:
+            sampler = _metrics.MetricSampler(self._worker_pid)
+            sampler.start()
 
-    def run_query(self, sql: str, query_id: str) -> RunResult:
-        raise NotImplementedError(
-            "Phase 2: subprocess delta-forge-cli run --format json, parse JSON, "
-            "capture wall_ms via time.perf_counter() and engine_reported_ms from "
-            "the JSON's execution_time_ms field"
+        t0 = time.perf_counter()
+        rows_returned: int | None = None
+        result_sha: str | None = None
+        engine_reported_ms: float | None = None
+        exit_code = 0
+        error: str | None = None
+
+        try:
+            if step.kind == STEP_PYTHON:
+                if step.fn is None:
+                    raise ValueError("STEP_PYTHON requires fn")
+                step.fn(self)
+
+            elif step.kind in (STEP_SQL_DDL, STEP_SQL_DML, STEP_MAINTENANCE,
+                               STEP_CYPHER_DML):
+                if not step.sql:
+                    raise ValueError(f"{step.kind} step requires sql")
+                # Multi-statement scripts: run each separately.
+                stmts = _split_sql_statements(step.sql)
+                if not stmts:
+                    raise ValueError(f"{step.kind} step has no statements")
+                summed_engine_ms = 0.0
+                saw_engine_ms = False
+                for stmt in stmts:
+                    proc = self._run_cli_query(stmt, timeout=3600.0)
+                    if proc.returncode != 0:
+                        raise RuntimeError(
+                            f"delta-forge-cli failed (exit {proc.returncode}): "
+                            f"{(proc.stderr or proc.stdout)[:1000]}"
+                        )
+                    parsed = _try_parse_cli_json(proc.stdout)
+                    if parsed is not None and "execution_time_ms" in parsed:
+                        summed_engine_ms += float(parsed["execution_time_ms"])
+                        saw_engine_ms = True
+                    else:
+                        ms = _scrape_dml_ms(proc.stdout)
+                        if ms is not None:
+                            summed_engine_ms += ms
+                            saw_engine_ms = True
+                if saw_engine_ms:
+                    engine_reported_ms = summed_engine_ms
+
+            elif step.kind in (STEP_SQL_QUERY, STEP_CYPHER_QUERY):
+                if not step.sql:
+                    raise ValueError(f"{step.kind} step requires query text")
+                # A measured query step is a single statement by contract;
+                # the workload should not glue multiple SELECTs together.
+                proc = self._run_cli_query(step.sql, timeout=3600.0)
+                if proc.returncode != 0:
+                    raise RuntimeError(
+                        f"delta-forge-cli failed (exit {proc.returncode}): "
+                        f"{(proc.stderr or proc.stdout)[:1000]}"
+                    )
+                parsed = _try_parse_cli_json(proc.stdout)
+                if parsed is None:
+                    raise RuntimeError(
+                        f"CLI did not return JSON for {step.kind}; "
+                        f"stdout head: {proc.stdout[:300]!r}"
+                    )
+                if "execution_time_ms" in parsed:
+                    engine_reported_ms = float(parsed["execution_time_ms"])
+                rows = parsed.get("rows") or []
+                cols = parsed.get("columns") or []
+                rows_returned = int(parsed.get("row_count", len(rows)))
+                if step.expects_rows:
+                    from workloads.spec import hash_result_rows
+                    # The CLI emits each row as {col: value_or_null}. Render
+                    # in declared column order so the hash is deterministic.
+                    tuple_rows = [
+                        tuple(r.get(c) for c in cols) for r in rows
+                    ]
+                    result_sha, _ = hash_result_rows(tuple_rows)
+
+            else:
+                raise ValueError(f"unknown step kind: {step.kind}")
+
+        except Exception as e:
+            exit_code = 1
+            error = repr(e)[:2000]
+
+        wall_ms = (time.perf_counter() - t0) * 1000.0
+
+        rss_peak: float | None = None
+        cpu_pct: float | None = None
+        if sampler is not None:
+            sampler.stop()
+            rss_peak = sampler.peak_rss_mb
+            cpu_pct = sampler.avg_cpu_pct
+
+        return StepResult(
+            step_id=step.id,
+            wall_ms=wall_ms,
+            engine_reported_ms=engine_reported_ms,
+            rss_peak_mb=rss_peak,
+            cpu_pct_avg=cpu_pct,
+            rows_returned=rows_returned,
+            result_sha256=result_sha,
+            exit_code=exit_code,
+            error=error,
         )
+
+    # ----- helpers -----------------------------------------------------------
+
+    def _run_cli_query(self, sql: str, timeout: float) -> subprocess.CompletedProcess:
+        """Invoke `delta-forge-cli --format json query <sql>`.
+
+        We pass the SQL as a single positional argument; the CLI joins its
+        positional args with spaces (`sql.join(" ")` in main.rs:227), which
+        for a one-arg invocation reproduces the literal text including
+        embedded newlines.
+        """
+        return subprocess.run(
+            [self._cli_path, "--format", "json", "query", sql],
+            env=self._cli_env(),
+            capture_output=True, text=True, timeout=timeout,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Statement splitting + output parsing
+# ---------------------------------------------------------------------------
+
+# Match a top-level semicolon: a `;` followed by a newline OR end-of-string,
+# *not* one that's inside a single-quoted string. The bench-authored scripts
+# are deliberately simple (no dollar-quoting, no plpgsql blocks); a full
+# tokenizer is overkill.
+_SEMI_RE = re.compile(r";\s*(?:\n|$)")
+
+
+def _split_sql_statements(text: str) -> list[str]:
+    """Split a ``;``-terminated multi-statement script into individual
+    statements. Whitespace-only / comment-only fragments are dropped.
+    """
+    out: list[str] = []
+    last = 0
+    for m in _SEMI_RE.finditer(text):
+        chunk = text[last:m.start()].strip()
+        last = m.end()
+        if not chunk:
+            continue
+        # Drop pure-comment chunks.
+        non_comment = "\n".join(
+            line for line in chunk.splitlines()
+            if line.strip() and not line.strip().startswith("--")
+        )
+        if non_comment.strip():
+            out.append(chunk)
+    tail = text[last:].strip()
+    if tail:
+        non_comment = "\n".join(
+            line for line in tail.splitlines()
+            if line.strip() and not line.strip().startswith("--")
+        )
+        if non_comment.strip():
+            out.append(tail)
+    return out
+
+
+_DML_MS_RE = re.compile(r"\((\d+)ms\)")
+
+
+def _scrape_dml_ms(stdout: str) -> float | None:
+    """When the CLI executes a DML/DDL it prints a one-liner like
+    ``  ✓ Inserted 10000000 rows (8421ms)`` (see
+    delta-forge-cli/src/output.rs:208). Recover the millisecond field
+    so engine_reported_ms is populated for non-query steps too.
+    """
+    for line in stdout.splitlines():
+        m = _DML_MS_RE.search(line)
+        if m:
+            try:
+                return float(m.group(1))
+            except ValueError:
+                continue
+    return None
+
+
+def _try_parse_cli_json(stdout: str) -> dict | None:
+    """Extract the JSON object from CLI stdout.
+
+    The CLI may interleave informational lines (``Node: x → y``,
+    ``Authenticating as ...``) before the JSON payload. The payload is
+    pretty-printed, starts with a top-level `{`, and runs to the matching
+    `}`. We scan for the first `{` at column 0 and decode from there.
+    """
+    if not stdout:
+        return None
+    # Fast path: stdout starts directly with the JSON.
+    s = stdout.lstrip()
+    if s.startswith("{"):
+        try:
+            return json.loads(s)
+        except json.JSONDecodeError:
+            pass
+
+    # Slow path: find the first column-0 `{` and try to decode through to
+    # the matching `}` by scanning braces.
+    lines = stdout.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("{"):
+            depth = 0
+            buf: list[str] = []
+            for j in range(i, len(lines)):
+                buf.append(lines[j])
+                for ch in lines[j]:
+                    if ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                        if depth == 0:
+                            try:
+                                return json.loads("\n".join(buf))
+                            except json.JSONDecodeError:
+                                return None
+            return None
+    return None

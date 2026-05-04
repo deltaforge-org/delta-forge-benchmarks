@@ -51,6 +51,19 @@ class Workload:
     at this scale factor is staged. None means the workload generates its
     own data in setup_steps."""
 
+    applicable_engines: tuple[str, ...] | None = None
+    """If set, the runner only schedules this workload for the engines listed.
+    Engines outside the list are silently skipped (with a one-line note in
+    the log). Used by graph workloads that only make sense on engines with
+    a graph runtime (e.g. df, neo4j) and not Spark. None means the workload
+    runs on every engine in the run."""
+
+    data_subdir: str = "tpch_sf{scale}"
+    """Sub-path under `data/` that this workload reads from. The default
+    matches the TPC-H workloads. Graph workloads override to e.g.
+    'graph_finance_sf{scale}'. Substituted at runtime: '{scale}' becomes
+    the active scale factor."""
+
 
 @dataclasses.dataclass
 class StepRunRecord:
