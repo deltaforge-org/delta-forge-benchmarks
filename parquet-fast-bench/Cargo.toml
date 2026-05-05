@@ -1,0 +1,40 @@
+[package]
+name = "delta-forge-parquet-fast-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Microbenchmark harness comparing delta-forge-parquet-fast against upstream parquet-rs ParquetRecordBatchReader on identical local files. Builds three fixture parquet files at startup (bulk scan, selective filter, point lookup) and exercises both readers across four scan shapes."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Subjects under test.
+delta-forge-parquet-fast = { path = "../../delta-forge-parquet-fast" }
+delta-forge-io = { path = "../../delta-forge-io" }
+
+# Parquet write side (fixture generation) and the upstream reader we
+# benchmark against.
+parquet = { workspace = true }
+arrow = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+
+# Async runtime: the fast reader is async, so the parquet-rs side uses
+# the sync ParquetRecordBatchReader path (Read + Seek over std::fs::File)
+# for an apples-to-apples local-file comparison without forcing one side
+# through tokio::fs for no benefit.
+tokio = { workspace = true }
+futures = { workspace = true }
+
+bytes = { workspace = true }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "parquet_fast_vs_rs"
+harness = false

@@ -1,0 +1,53 @@
+-- index-perf: idempotently register the fixture in the catalog.
+-- CREATE DELTA TABLE IF NOT EXISTS registers an existing Delta log
+-- without modifying data, and creates an empty table if absent.
+-- Schema must match df_write_10m.sql exactly.
+
+CREATE SCHEMA IF NOT EXISTS pbi.bench;
+
+CREATE DELTA TABLE IF NOT EXISTS pbi.bench.idx_perf_customer_10m (
+    customer_id                 BIGINT NOT NULL,
+    customer_code               STRING NOT NULL,
+    salutation                  STRING NOT NULL,
+    first_name                  STRING NOT NULL,
+    middle_initial              STRING NOT NULL,
+    last_name                   STRING NOT NULL,
+    full_name                   STRING NOT NULL,
+    email                       STRING NOT NULL,
+    phone_e164                  STRING NOT NULL,
+    gender                      STRING NOT NULL,
+    birth_date                  DATE NOT NULL,
+    age_band                    STRING NOT NULL,
+    marital_status              STRING NOT NULL,
+    education_level             STRING NOT NULL,
+    occupation                  STRING NOT NULL,
+    employer_name               STRING NOT NULL,
+    annual_income_usd           DECIMAL(18,2) NOT NULL,
+    income_band                 STRING NOT NULL,
+    household_size              INT NOT NULL,
+    number_of_children          INT NOT NULL,
+    address_line_1              STRING NOT NULL,
+    address_line_2              STRING,
+    city                        STRING NOT NULL,
+    state_code                  STRING NOT NULL,
+    state_name                  STRING NOT NULL,
+    postal_code                 STRING NOT NULL,
+    country_code                STRING NOT NULL,
+    country_name                STRING NOT NULL,
+    region                      STRING NOT NULL,
+    latitude                    DOUBLE NOT NULL,
+    longitude                   DOUBLE NOT NULL,
+    signup_date                 DATE NOT NULL,
+    signup_channel              STRING NOT NULL,
+    preferred_contact_channel   STRING NOT NULL,
+    marketing_opt_in            BOOLEAN NOT NULL,
+    sms_opt_in                  BOOLEAN NOT NULL,
+    loyalty_tier                STRING NOT NULL,
+    loyalty_points_balance      INT NOT NULL,
+    lifetime_orders             INT NOT NULL,
+    lifetime_revenue_usd        DECIMAL(18,2) NOT NULL,
+    last_purchase_date          DATE NOT NULL,
+    churn_risk_score            DOUBLE NOT NULL,
+    segment                     STRING NOT NULL
+)
+LOCATION 'B:/odbc_df/tmp/index-perf-data/idx_perf_customer_10m';

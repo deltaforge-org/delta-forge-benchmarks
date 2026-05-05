@@ -164,6 +164,9 @@ else
 fi
 echo ""
 
+echo "[phase 1/3] re-registering fixture in catalog (CREATE IF NOT EXISTS)"
+run_admin_once "df_open_table.sql"
+
 echo "[phase 1/3] dropping existing index (no-op if absent)"
 run_admin_once "df_drop_index.sql"
 
