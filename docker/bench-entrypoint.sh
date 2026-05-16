@@ -19,6 +19,7 @@ set -euo pipefail
 
 LOG_DIR="${LOG_DIR:-/var/log/deltaforge}"
 mkdir -p "$LOG_DIR"
+chmod 1777 "$LOG_DIR"  # world-writable so postgres user can create its log file
 
 # ----- 1. Postgres ------------------------------------------------------------
 
@@ -42,15 +43,17 @@ PGUSER_DF="${PGUSER:-deltaforge}"
 PGDB_DF="${PGDATABASE:-deltaforge}"
 PGPASSWORD_DF="${PGPASSWORD:-deltaforge_local}"
 
-su -p -s /bin/bash postgres -c "${PGBIN}/psql -p ${PGPORT} -tAc \"SELECT 1 FROM pg_roles WHERE rolname='${PGUSER_DF}'\"" \
+# Connect as the postgres superuser to the postgres system DB.
+# -U postgres  avoids PGUSER=deltaforge; -d postgres avoids PGDATABASE=deltaforge.
+su -p -s /bin/bash postgres -c "${PGBIN}/psql -p ${PGPORT} -U postgres -d postgres -tAc \"SELECT 1 FROM pg_roles WHERE rolname='${PGUSER_DF}'\"" \
     | grep -q 1 || \
     su -p -s /bin/bash postgres -c \
-        "${PGBIN}/psql -p ${PGPORT} -c \"CREATE ROLE ${PGUSER_DF} WITH LOGIN PASSWORD '${PGPASSWORD_DF}' SUPERUSER\""
+        "${PGBIN}/psql -p ${PGPORT} -U postgres -d postgres -c \"CREATE ROLE ${PGUSER_DF} WITH LOGIN PASSWORD '${PGPASSWORD_DF}' SUPERUSER\""
 
-su -p -s /bin/bash postgres -c "${PGBIN}/psql -p ${PGPORT} -tAc \"SELECT 1 FROM pg_database WHERE datname='${PGDB_DF}'\"" \
+su -p -s /bin/bash postgres -c "${PGBIN}/psql -p ${PGPORT} -U postgres -d postgres -tAc \"SELECT 1 FROM pg_database WHERE datname='${PGDB_DF}'\"" \
     | grep -q 1 || \
     su -p -s /bin/bash postgres -c \
-        "${PGBIN}/psql -p ${PGPORT} -c \"CREATE DATABASE ${PGDB_DF} OWNER ${PGUSER_DF}\""
+        "${PGBIN}/psql -p ${PGPORT} -U postgres -d postgres -c \"CREATE DATABASE ${PGDB_DF} OWNER ${PGUSER_DF}\""
 
 echo "[entrypoint] postgres ready: postgres://${PGUSER_DF}@127.0.0.1:${PGPORT}/${PGDB_DF}"
 
@@ -66,6 +69,25 @@ export DELTA_FORGE_ENGINEER_PASSWORD="${DELTA_FORGE_ENGINEER_PASSWORD:-bench_eng
 export DELTA_FORGE_CONFIG_DIR="${DELTA_FORGE_CONFIG_DIR:-/var/lib/deltaforge}"
 export DELTA_FORGE_BIND_ADDR="${DELTA_FORGE_BIND_ADDR:-127.0.0.1:3000}"
 
+# The Dockerfile runs `delta-forge-server --help` to verify the binary, which
+# can leave a stale bootstrap.lock baked into the image. Remove it so the
+# server starts clean every time the container is created.
+mkdir -p "${DELTA_FORGE_CONFIG_DIR}"
+# Clear any stale lock from either config location the server may use.
+rm -f "${DELTA_FORGE_CONFIG_DIR}/bootstrap.lock" \
+      "${HOME}/.deltaforge/bootstrap.lock" \
+      "/root/.deltaforge/bootstrap.lock"
+
+# License key: passed through to the bootstrap orchestrator which installs it
+# into the license manager and activates online. Optional — without a key the
+# instance runs in PendingActivation mode (limited to local/offline evaluation).
+if [ -n "${DELTA_FORGE_LICENSE_KEY:-}" ]; then
+    export DELTA_FORGE_LICENSE_KEY
+    echo "[entrypoint] license key present — will activate during bootstrap"
+else
+    echo "[entrypoint] DELTA_FORGE_LICENSE_KEY not set — running in evaluation mode"
+fi
+
 mkdir -p "${DELTA_FORGE_CONFIG_DIR}"
 
 # ----- 3. Start delta-forge-server (control plane) ----------------------------
@@ -74,7 +96,31 @@ CONTROL_HEALTH_URL="${CONTROL_HEALTH_URL:-http://127.0.0.1:3000/health}"
 COMPUTE_HEALTH_URL="${COMPUTE_HEALTH_URL:-http://127.0.0.1:3031/health}"
 
 echo "[entrypoint] starting delta-forge-server (bind ${DELTA_FORGE_BIND_ADDR})"
-nohup delta-forge-server > "${LOG_DIR}/control.log" 2>&1 &
+
+# The server binary (cmd_run) recursively calls itself after headless bootstrap
+# completes, but the outer invocation still holds the exclusive instance lock.
+# The recursive inner call therefore fails to acquire the same flock and the
+# process exits — even though bootstrap wrote config.toml successfully.
+#
+# Workaround: run the server TWICE.
+#   Pass 1 (synchronous): bootstrap only. Server exits after the recursive
+#            lock failure, but config.toml is on disk.
+#   Pass 2 (background):  config.toml present → server skips bootstrap,
+#            goes straight to ensure_ready + serve, acquires the lock fresh.
+
+echo "[entrypoint] pass 1: headless bootstrap (server will exit after writing config.toml)"
+delta-forge-server >> "${LOG_DIR}/control.log" 2>&1 || true
+
+CONFIG_FILE="${DELTA_FORGE_CONFIG_DIR}/config.toml"
+if [ ! -f "${CONFIG_FILE}" ]; then
+    echo "[entrypoint] ERROR: pass 1 did not write ${CONFIG_FILE}; aborting" >&2
+    tail -20 "${LOG_DIR}/control.log" >&2
+    exit 1
+fi
+echo "[entrypoint] pass 1 complete — config.toml written"
+echo "[entrypoint] pass 2: starting server in serve mode"
+
+nohup delta-forge-server >> "${LOG_DIR}/control.log" 2>&1 &
 SERVER_PID=$!
 echo $SERVER_PID > /var/run/delta-forge-server.pid
 

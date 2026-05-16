@@ -180,6 +180,7 @@ jobs:
             com.deltaforge.engine.revision=${{ env.DF_GIT_SHA }}
             com.deltaforge.engine.version=${{ steps.ver.outputs.df_version }}
           build-args: |
+            BUILD_MODE=release
             DF_VERSION=${{ steps.ver.outputs.df_version }}
             DF_GIT_SHA=${{ env.DF_GIT_SHA }}
             DF_GPG_FINGERPRINT=${{ secrets.DELTAFORGE_GPG_FINGERPRINT }}
@@ -191,25 +192,35 @@ jobs:
           provenance: true
           sbom: true
 
-      # ---------- 5. Smoke test ----------------------------------------------
-      - name: Smoke-test the published image
+      # ---------- 5. Smoke test — run the benchmark at SF=1 ------------------
+      # Runs all three workloads (read, write, crud) at scale 1 against the
+      # DF instance the container starts for itself. Passes the license key
+      # so the instance activates and runs without rate limits. Results land
+      # in /results inside the container; we copy them out for the job summary.
+      - name: Run benchmark smoke test (SF=1)
         run: |
           set -euxo pipefail
-          docker pull ${IMAGE_NAME}:${{ steps.ver.outputs.bench_tag }}
-          docker run --rm -d --name bench-smoke \
-              -e DELTA_FORGE_ADMIN_PASSWORD=ci_smoke \
-              -e DELTA_FORGE_ENGINEER_PASSWORD=ci_smoke \
-              ${IMAGE_NAME}:${{ steps.ver.outputs.bench_tag }} \
-              sleep 90
-          for i in $(seq 1 120); do
-            if docker logs bench-smoke 2>&1 | grep -q "bootstrap complete"; then
-              echo "smoke ok"
-              docker rm -f bench-smoke || true
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "smoke timeout"
-          docker logs bench-smoke || true
-          docker rm -f bench-smoke || true
-          exit 1
+          mkdir -p ci-results
+          docker run --rm \
+            -e DELTA_FORGE_LICENSE_KEY=${{ secrets.DELTA_FORGE_LICENSE_KEY }} \
+            -e DELTA_FORGE_ADMIN_PASSWORD=ci_bench \
+            -e DELTA_FORGE_ENGINEER_PASSWORD=ci_bench \
+            -e BENCH_SCALE_FACTOR=1 \
+            -v "$(pwd)/ci-results:/results" \
+            ${IMAGE_NAME}:${{ steps.ver.outputs.bench_tag }} \
+            python bench_runner.py \
+              --engines df,spark-default \
+              --workloads tpch_read,bulk_load,crud \
+              --scale 1 \
+              --results-dir /results \
+              --no-purge
+          echo "=== Benchmark summary ==="
+          cat ci-results/*/summary.csv 2>/dev/null || echo "(no summary yet)"
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-results-${{ steps.ver.outputs.bench_tag }}
+          path: ci-results/
+          retention-days: 90

@@ -91,8 +91,12 @@ SCALE_RAM_GB_RECOMMENDED = {1: 8, 10: 16, 30: 32, 100: 96, 300: 256, 1000: 512}
 def disk_free_gb(path: Path) -> float:
     """Free bytes at `path`'s filesystem, in GB."""
     try:
-        st = os.statvfs(path)
-        return (st.f_bavail * st.f_frsize) / (1024 ** 3)
+        if hasattr(os, "statvfs"):
+            st = os.statvfs(path)
+            return (st.f_bavail * st.f_frsize) / (1024 ** 3)
+        import shutil as _shutil
+        usage = _shutil.disk_usage(path)
+        return usage.free / (1024 ** 3)
     except OSError:
         return float("nan")
 
@@ -333,6 +337,20 @@ def cmd_run(args: argparse.Namespace) -> int:
         wl.name: workload_data_dir(wl, args.scale) for wl in workloads_to_run
     }
     if not args.dry_run:
+        # Auto-generate TPC-H data if any TPC-H workload is scheduled and its
+        # parquet files are missing. Graph workloads require separate generation
+        # (the data is too large to bundle and needs the bench's data_gen script).
+        for wl in workloads_to_run:
+            d = workload_data[wl.name]
+            if wl.data_subdir.startswith("tpch_sf") and not (
+                d.exists() and any(d.rglob("*.parquet"))
+            ):
+                print(f"[data] TPC-H SF={args.scale} not found at {d} — generating now...")
+                from data_gen.generate_tpch import generate as _gen_tpch
+                _gen_tpch(args.scale, d)
+                print(f"[data] TPC-H generation complete.")
+
+        # Final check: error on any workload that still has no data.
         missing: list[str] = []
         for wl in workloads_to_run:
             d = workload_data[wl.name]
@@ -343,8 +361,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             for line in missing:
                 print(f"  {line}", file=sys.stderr)
             print(
-                "\nGenerate it first. Examples:\n"
-                f"  python data_gen/generate_tpch.py --scale {args.scale}\n"
+                "\nFor graph workloads, generate manually:\n"
                 f"  python data_gen/generate_graph_finance.py --scale {args.scale}\n",
                 file=sys.stderr,
             )
@@ -524,12 +541,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--scale", type=int,
                    default=int(os.environ.get("BENCH_SCALE_FACTOR", "1")),
                    help="TPC-H scale factor (1 = ~1 GB, 10 = ~10 GB).")
-    p.add_argument("--engines", default="spark-default,spark-tuned",
-                   help="Comma-separated engine names. Default: spark-default,spark-tuned (skips df).")
-    p.add_argument("--workloads", default="",
-                   help="Comma-separated workload names. Default: all discovered.")
-    p.add_argument("--results-dir", default=str(DEFAULT_RESULTS_DIR),
-                   help="Where per-run artifacts go.")
+    p.add_argument("--engines", default="df,spark-default",
+                   help="Comma-separated engine names. Default: df,spark-default.")
+    p.add_argument("--workloads", default="tpch_read,bulk_load,crud",
+                   help="Comma-separated workload names. Default: tpch_read,bulk_load,crud.")
+    # Inside the container the results volume is mounted at /results.
+    # On the host, fall back to the repo's results/ directory.
+    _default_results = "/results" if Path("/results").exists() else str(DEFAULT_RESULTS_DIR)
+    p.add_argument("--results-dir", default=_default_results,
+                   help="Where per-run artifacts go. Defaults to /results inside container.")
     p.add_argument("--tag", default=None,
                    help="Optional suffix appended to the results directory name.")
     p.add_argument("--no-purge", action="store_true",

@@ -104,7 +104,12 @@ class DeltaForgeEngine(Engine):
         username: str | None = None,
         password: str | None = None,
     ) -> None:
-        self._cli_path = cli_path or shutil.which("delta-forge-cli") or "delta-forge-cli"
+        self._cli_path = (
+            cli_path
+            or os.environ.get("DF_CLI_PATH")
+            or shutil.which("delta-forge-cli")
+            or "delta-forge-cli"
+        )
         self._control_url = (
             control_url
             or os.environ.get("DF_CONTROL_URL")

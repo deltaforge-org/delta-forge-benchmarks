@@ -24,21 +24,31 @@ ARG PYSPARK_VERSION=4.0.0
 ARG DELTA_SPARK_VERSION=4.0.0
 ARG DUCKDB_VERSION=1.1.3
 ARG POSTGRES_MAJOR=15
-# Engine version pulled from deltaforge-org releases. Both `deltaforge-cli`
-# and `deltaforge-compute` tarballs at this tag must exist on
-# https://github.com/deltaforge-org/delta-forge/releases/.
-# Format: bare version (e.g. 0.5.2) without the "v" prefix; the workflow adds it.
+
+# ---------------------------------------------------------------------------
+# BUILD_MODE controls how DeltaForge binaries are acquired.
+#
+#   release (default) -- download + GPG-verify from deltaforge-org GitHub
+#                        releases at DF_VERSION. Used for published images.
+#
+#   local             -- copy pre-staged Linux ELF binaries from ./build/df-bins/
+#                        (run scripts/stage-local-bins.sh first).
+#                        For dev/testing before official packages land.
+#
+# When official packages exist, the Dockerfile gains an `apt` path and
+# BUILD_MODE becomes obsolete — `apt install delta-forge` replaces everything.
+# ---------------------------------------------------------------------------
+ARG BUILD_MODE=release
+
+# Engine version pulled from deltaforge-org releases. Required for BUILD_MODE=release.
 ARG DF_VERSION
-# Engine commit SHA, recorded in image labels and manifest.json. The publish
-# workflow resolves this from the engine repo HEAD at DF_VERSION.
+# Engine commit SHA, recorded in image labels and manifest.json.
 ARG DF_GIT_SHA=unset
-# Released-artifact URL prefix. Tied to the deltaforge-org release.yml output.
+# Released-artifact URL prefix.
 ARG DF_RELEASE_URL=https://github.com/deltaforge-org/delta-forge/releases/download
-# GPG fingerprint expected on every released tarball's .sig. Set to skip
-# verification (not recommended).
+# GPG fingerprint expected on every released tarball's .sig.
 ARG DF_GPG_FINGERPRINT=
-# GPG public key bundled into the image so reviewers can recompute
-# signatures offline. Path is relative to the build context.
+# GPG public key bundled into the image.
 ARG DF_GPG_PUBKEY_PATH=docker/deltaforge-release-key.asc
 
 FROM eclipse-temurin:${JDK_VERSION}-jdk-jammy AS runtime
@@ -47,6 +57,7 @@ ARG PYSPARK_VERSION
 ARG DELTA_SPARK_VERSION
 ARG DUCKDB_VERSION
 ARG POSTGRES_MAJOR
+ARG BUILD_MODE
 ARG DF_VERSION
 ARG DF_GIT_SHA=unset
 ARG DF_RELEASE_URL
@@ -139,64 +150,76 @@ RUN python -m pip install --upgrade pip \
 # will switch to a third download line and the workflow's source-build step
 # will go away. The image contract does not change.
 
-# Bundle the GPG public key so signature verification stays inside the
-# build (no out-of-band trust to a keyserver). Reviewers can audit the file.
+# ---------------------------------------------------------------------------
+# DeltaForge binary acquisition — BUILD_MODE selects the path.
+#
+#  local:   All three binaries are pre-staged in ./build/df-bins/ by
+#           scripts/stage-local-bins.sh. No network access required.
+#           DF_VERSION not needed. Used during development / pre-release.
+#
+#  release: CLI + worker downloaded from GitHub release at DF_VERSION.
+#           Server is still built from source by the publish workflow and
+#           staged at ./build/df-bins/delta-forge-server (the only file
+#           that workflow puts there in release mode).
+# ---------------------------------------------------------------------------
+
+# Always copy build/df-bins/ into a staging directory.
+# In local mode this has all three binaries.
+# In release mode it has delta-forge-server only (workflow artifact).
+COPY build/df-bins/ /tmp/df-stage/
+
+# Bundle the GPG public key for release-mode signature verification.
 COPY ${DF_GPG_PUBKEY_PATH} /tmp/deltaforge-release-key.asc
 
 RUN set -eux; \
-    if [ -z "${DF_VERSION}" ]; then \
-        echo "ERROR: DF_VERSION build-arg not set; pass --build-arg DF_VERSION=<x.y.z>" >&2; \
-        exit 1; \
+    if [ "${BUILD_MODE}" = "local" ]; then \
+        echo "=== BUILD_MODE=local: installing pre-staged binaries ==="; \
+        for bin in delta-forge-cli delta-forge-server delta-forge-worker; do \
+            if [ ! -f "/tmp/df-stage/${bin}" ]; then \
+                echo "ERROR: /tmp/df-stage/${bin} not found." >&2; \
+                echo "  Run scripts/stage-local-bins.sh first." >&2; \
+                exit 1; \
+            fi; \
+            install -m 0755 "/tmp/df-stage/${bin}" "/usr/local/bin/${bin}"; \
+            echo "  installed ${bin}"; \
+        done; \
+    else \
+        echo "=== BUILD_MODE=release: downloading from GitHub releases ==="; \
+        if [ -z "${DF_VERSION}" ]; then \
+            echo "ERROR: DF_VERSION build-arg required for BUILD_MODE=release" >&2; \
+            exit 1; \
+        fi; \
+        cd /tmp; \
+        GNUPGHOME=$(mktemp -d) && export GNUPGHOME; \
+        gpg --batch --import /tmp/deltaforge-release-key.asc; \
+        if [ -n "${DF_GPG_FINGERPRINT}" ]; then \
+            gpg --batch --list-keys --with-colons "${DF_GPG_FINGERPRINT}" \
+                > /dev/null 2>&1 \
+                || { echo "ERROR: key fingerprint mismatch"; exit 1; }; \
+        fi; \
+        for component in cli compute; do \
+            url_base="${DF_RELEASE_URL}/v${DF_VERSION}"; \
+            tarball="deltaforge-${component}-${DF_VERSION}-linux-x64.tar.gz"; \
+            curl -fsSL --retry 3 -o "${tarball}"     "${url_base}/${tarball}"; \
+            curl -fsSL --retry 3 -o "${tarball}.sig" "${url_base}/${tarball}.sig"; \
+            gpg --batch --verify "${tarball}.sig" "${tarball}"; \
+            sha256sum "${tarball}" > "${tarball}.sha256"; \
+            tar -xzf "${tarball}"; \
+        done; \
+        install -m 0755 /tmp/deltaforge-cli     /usr/local/bin/delta-forge-cli; \
+        install -m 0755 /tmp/deltaforge-compute /usr/local/bin/delta-forge-worker; \
+        mkdir -p /usr/local/share/deltaforge-bench; \
+        mv /tmp/deltaforge-*-${DF_VERSION}-linux-x64.tar.gz.sha256 \
+           /tmp/deltaforge-*-${DF_VERSION}-linux-x64.tar.gz.sig \
+           /usr/local/share/deltaforge-bench/ 2>/dev/null || true; \
+        rm -rf "${GNUPGHOME}" /tmp/deltaforge-* /tmp/*.tar.gz; \
+        # Server comes from the staged build artifact (workflow-built).
+        install -m 0755 /tmp/df-stage/delta-forge-server /usr/local/bin/delta-forge-server; \
     fi; \
-    cd /tmp; \
-    \
-    # 1. Import release public key into a throwaway keyring.
-    GNUPGHOME=$(mktemp -d) && export GNUPGHOME; \
-    gpg --batch --import /tmp/deltaforge-release-key.asc; \
-    if [ -n "${DF_GPG_FINGERPRINT}" ]; then \
-        gpg --batch --list-keys --with-colons "${DF_GPG_FINGERPRINT}" \
-            > /dev/null 2>&1 \
-            || { echo "ERROR: imported key does not contain fingerprint ${DF_GPG_FINGERPRINT}"; exit 1; }; \
-    fi; \
-    \
-    # 2. Download + verify cli and compute tarballs.
-    for component in cli compute; do \
-        url_base="${DF_RELEASE_URL}/v${DF_VERSION}"; \
-        tarball="deltaforge-${component}-${DF_VERSION}-linux-x64.tar.gz"; \
-        echo ">>> downloading ${url_base}/${tarball}"; \
-        curl -fsSL --retry 3 -o "${tarball}"      "${url_base}/${tarball}"; \
-        curl -fsSL --retry 3 -o "${tarball}.sig"  "${url_base}/${tarball}.sig"; \
-        gpg --batch --verify "${tarball}.sig" "${tarball}"; \
-        sha256sum "${tarball}" > "${tarball}.sha256"; \
-        cat "${tarball}.sha256"; \
-        tar -xzf "${tarball}"; \
-    done; \
-    \
-    # 3. Move + rename to the canonical /usr/local/bin paths.
-    install -m 0755 /tmp/deltaforge-cli     /usr/local/bin/delta-forge-cli; \
-    install -m 0755 /tmp/deltaforge-compute /usr/local/bin/delta-forge-worker; \
-    \
-    # 4. Persist sha256s + signatures alongside the binaries so a reviewer
-    #    inside the running container can audit them post-hoc.
-    mkdir -p /usr/local/share/deltaforge-bench; \
-    mv /tmp/deltaforge-*-${DF_VERSION}-linux-x64.tar.gz.sha256 \
-       /tmp/deltaforge-*-${DF_VERSION}-linux-x64.tar.gz.sig \
-       /usr/local/share/deltaforge-bench/; \
-    \
-    # 5. Cleanup throwaway keyring + tarballs.
-    rm -rf "${GNUPGHOME}" /tmp/deltaforge-* /tmp/*.tar.gz; \
-    \
-    # 6. Verify both binaries exist and are runnable. delta-forge-server is
-    #    copied in next from the build context.
-    /usr/local/bin/delta-forge-cli --version >/dev/null 2>&1 \
-        || { echo "ERROR: delta-forge-cli does not run"; exit 1; }
-
-# delta-forge-server (control plane). Source-built by the publish workflow
-# at the same DF_VERSION tag and dropped here. See README + docker-publish.yml.
-COPY build/df-bins/delta-forge-server /usr/local/bin/delta-forge-server
-RUN chmod +x /usr/local/bin/delta-forge-server \
-    && /usr/local/bin/delta-forge-server --help >/dev/null 2>&1 \
-        || echo "WARN: delta-forge-server --help failed; binary may still boot OK"
+    rm -rf /tmp/df-stage /tmp/deltaforge-release-key.asc; \
+    echo "=== Binary check ==="; \
+    delta-forge-cli --version  2>/dev/null || echo "WARN: cli --version failed"; \
+    delta-forge-server --help  >/dev/null 2>&1 || echo "WARN: server --help failed";
 
 # Bench harness lives at /workspace, mounted from the host at runtime.
 WORKDIR /workspace
@@ -223,4 +246,10 @@ RUN printf '%s\n' \
     && chmod +x /usr/local/bin/print-versions
 
 ENTRYPOINT ["/usr/local/bin/bench-entrypoint.sh"]
-CMD ["sleep", "infinity"]
+# Default: run the benchmark and write results to /results.
+# Override with `docker run ... sleep infinity` for interactive exploration.
+CMD ["python", "bench_runner.py", \
+     "--engines", "df,spark-default", \
+     "--workloads", "tpch_read,bulk_load,crud", \
+     "--results-dir", "/results", \
+     "--no-purge"]

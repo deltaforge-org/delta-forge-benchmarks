@@ -1,0 +1,108 @@
+{
+  "cold_starts": {},
+  "data_hashes_by_workload": {
+    "bulk_load": {
+      "customer.parquet": "a06c379fd4d9e6cdf88b55ffd58a27e8da94981ddff300a086cd27cfc8b88a51",
+      "lineitem.parquet": "586b70d8bcddfc636923ed321a54e45e16bdc5b23a35702eddfb76b9e45c3eb6",
+      "nation.parquet": "e7135c3cfdaabe97c5b8492977c82d62954fcc39badd0dfad914ba351643e4f5",
+      "orders.parquet": "f29283dff4c51f38183cdb579a9ecc0aca47b0aa9d0b5a82d06349a877c91c17",
+      "part.parquet": "70ca6cb182774c5fd114eb05e7b067bf7a1c1ba645e08abacaececa56f57a8da",
+      "partsupp.parquet": "4085e2cc7d82b7ef940030c471fceb702337dce47e8a9b871b46846ef0f3739f",
+      "region.parquet": "8aac3e19c33f446a80d2188b92eb74025953b4271dc36fa6db4ab5628eb16f88",
+      "supplier.parquet": "115aaaf7e5ee37f6de548d671abb5ad710c1384ad4548f7c8b0f5733975f48d6"
+    },
+    "crud": {
+      "customer.parquet": "a06c379fd4d9e6cdf88b55ffd58a27e8da94981ddff300a086cd27cfc8b88a51",
+      "lineitem.parquet": "586b70d8bcddfc636923ed321a54e45e16bdc5b23a35702eddfb76b9e45c3eb6",
+      "nation.parquet": "e7135c3cfdaabe97c5b8492977c82d62954fcc39badd0dfad914ba351643e4f5",
+      "orders.parquet": "f29283dff4c51f38183cdb579a9ecc0aca47b0aa9d0b5a82d06349a877c91c17",
+      "part.parquet": "70ca6cb182774c5fd114eb05e7b067bf7a1c1ba645e08abacaececa56f57a8da",
+      "partsupp.parquet": "4085e2cc7d82b7ef940030c471fceb702337dce47e8a9b871b46846ef0f3739f",
+      "region.parquet": "8aac3e19c33f446a80d2188b92eb74025953b4271dc36fa6db4ab5628eb16f88",
+      "supplier.parquet": "115aaaf7e5ee37f6de548d671abb5ad710c1384ad4548f7c8b0f5733975f48d6"
+    },
+    "tpch_read": {
+      "customer.parquet": "a06c379fd4d9e6cdf88b55ffd58a27e8da94981ddff300a086cd27cfc8b88a51",
+      "lineitem.parquet": "586b70d8bcddfc636923ed321a54e45e16bdc5b23a35702eddfb76b9e45c3eb6",
+      "nation.parquet": "e7135c3cfdaabe97c5b8492977c82d62954fcc39badd0dfad914ba351643e4f5",
+      "orders.parquet": "f29283dff4c51f38183cdb579a9ecc0aca47b0aa9d0b5a82d06349a877c91c17",
+      "part.parquet": "70ca6cb182774c5fd114eb05e7b067bf7a1c1ba645e08abacaececa56f57a8da",
+      "partsupp.parquet": "4085e2cc7d82b7ef940030c471fceb702337dce47e8a9b871b46846ef0f3739f",
+      "region.parquet": "8aac3e19c33f446a80d2188b92eb74025953b4271dc36fa6db4ab5628eb16f88",
+      "supplier.parquet": "115aaaf7e5ee37f6de548d671abb5ad710c1384ad4548f7c8b0f5733975f48d6"
+    }
+  },
+  "engine_versions": {},
+  "engines": [
+    "df"
+  ],
+  "host": {
+    "captured_at_utc": "2026-05-16T11:05:44+00:00",
+    "cgroup": {},
+    "cpu": {
+      "cpufreq": {}
+    },
+    "disk": {
+      "mount": {},
+      "throughput_probe": {
+        "bytes": 268435456,
+        "read_mb_s": 673.53,
+        "write_mb_s": 360.2
+      }
+    },
+    "env_pins": {
+      "BENCH_CPUS": "unset",
+      "BENCH_MEMORY": "unset",
+      "BENCH_SCALE_FACTOR": "unset",
+      "DELTA_SPARK_VERSION": "unset",
+      "DF_GIT_SHA": "unset",
+      "DF_VERSION": "unset",
+      "JDK_VERSION": "unset",
+      "PYSPARK_VERSION": "unset"
+    },
+    "fqdn": "CheSs",
+    "hostname": "CheSs",
+    "java": {
+      "java_home": "C:\\Program Files\\Eclipse Adoptium\\jdk-21.0.2.13-hotspot\\"
+    },
+    "memory": {},
+    "os": {
+      "kernel_release": "11",
+      "kernel_version": "10.0.26100",
+      "machine": "AMD64",
+      "platform": "Windows-11-10.0.26100-SP0",
+      "uname": {
+        "machine": "AMD64",
+        "node": "CheSs",
+        "processor": "Intel64 Family 6 Model 85 Stepping 4, GenuineIntel",
+        "release": "11",
+        "system": "Windows",
+        "version": "10.0.26100"
+      }
+    },
+    "python": {
+      "delta": "unknown",
+      "deltalake": "1.5.0",
+      "duckdb": "1.5.0",
+      "matplotlib": "3.10.9",
+      "pandas": "2.2.3",
+      "psutil": "7.1.0",
+      "pyspark": "4.0.0",
+      "python_executable": "C:\\Users\\tahir\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+      "python_version": "3.12.3"
+    },
+    "schema_version": 1,
+    "virtualization": {
+      "hypervisor_flag": false,
+      "wsl2": false
+    }
+  },
+  "preflight_issues": [],
+  "scale": 1,
+  "schema_version": 2,
+  "workloads": [
+    "tpch_read",
+    "bulk_load",
+    "crud"
+  ]
+}

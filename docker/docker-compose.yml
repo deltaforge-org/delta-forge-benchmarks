@@ -94,7 +94,9 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       args:
+        BUILD_MODE: ${BUILD_MODE:-local}
         DF_GIT_SHA: ${DF_GIT_SHA:-unset}
+        DF_VERSION: ${DF_VERSION:-}
         PYSPARK_VERSION: ${PYSPARK_VERSION:-4.0.0}
         DELTA_SPARK_VERSION: ${DELTA_SPARK_VERSION:-4.0.0}
         JDK_VERSION: ${JDK_VERSION:-17}
@@ -123,6 +125,8 @@ services:
       JDK_VERSION: ${JDK_VERSION:-17}
       DROPCACHES_TRIGGER: /run/dropcaches.sock
       # Headless DF bootstrap contract (delta-forge-bootstrap/src/inputs.rs).
+      # License key activates the DF instance at first boot. Pass via .env or -e.
+      DELTA_FORGE_LICENSE_KEY: ${DELTA_FORGE_LICENSE_KEY:-}
       DELTA_FORGE_ADMIN_PASSWORD: ${DELTA_FORGE_ADMIN_PASSWORD:-bench_admin_local}
       DELTA_FORGE_ENGINEER_PASSWORD: ${DELTA_FORGE_ENGINEER_PASSWORD:-bench_engineer_local}
       DELTA_FORGE_ADMIN_EMAIL: ${DELTA_FORGE_ADMIN_EMAIL:-admin@deltaforge.local}

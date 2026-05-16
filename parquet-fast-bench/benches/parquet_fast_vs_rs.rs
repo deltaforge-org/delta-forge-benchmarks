@@ -61,8 +61,8 @@ use tokio::runtime::Runtime;
 
 use delta_forge_parquet_fast::byte_range::ParquetByteRange;
 use delta_forge_parquet_fast::predicate_filter::apply_predicates;
-use delta_forge_parquet_fast::row_group_decoder::row_group_to_batch;
 use delta_forge_parquet_fast::row_selection_adapter::split_row_selection_per_row_group;
+use delta_forge_parquet_fast::test_helpers::collect_row_group_to_batch;
 
 use delta_forge_parquet_fast_bench::{
     load_metadata, open_byte_range, Fixtures, ROWS_BULK, ROWS_POINT,
@@ -233,9 +233,9 @@ async fn fast_full_scan(
 ) -> usize {
     let mut rows = 0usize;
     for rg_idx in 0..metadata.num_row_groups() {
-        let batch = row_group_to_batch(range, metadata, rg_idx, projected_leaves, None)
+        let batch = collect_row_group_to_batch(range, metadata, rg_idx, projected_leaves, None, 0)
             .await
-            .expect("fast reader row_group_to_batch");
+            .expect("fast reader collect_row_group_to_batch");
         rows += batch.num_rows();
     }
     rows
@@ -273,9 +273,9 @@ async fn fast_row_filter_scan(
         vec![Box::new(predicate)];
     let mut rows = 0usize;
     for rg_idx in 0..metadata.num_row_groups() {
-        let batch = row_group_to_batch(range, metadata, rg_idx, &projected, None)
+        let batch = collect_row_group_to_batch(range, metadata, rg_idx, &projected, None, 0)
             .await
-            .expect("fast reader row_group_to_batch");
+            .expect("fast reader collect_row_group_to_batch");
         let filtered = apply_predicates(batch, &mut predicates, &projected)
             .expect("fast reader apply_predicates");
         rows += filtered.num_rows();
@@ -311,15 +311,9 @@ async fn fast_row_selection_scan(
                 continue;
             }
         }
-        let batch = row_group_to_batch(
-            range,
-            metadata,
-            rg_idx,
-            &projected,
-            mask.as_deref(),
-        )
-        .await
-        .expect("fast reader row_group_to_batch with mask");
+        let batch = collect_row_group_to_batch(range, metadata, rg_idx, &projected, mask.as_deref(), 0)
+            .await
+            .expect("fast reader collect_row_group_to_batch with mask");
         rows += batch.num_rows();
     }
     rows
