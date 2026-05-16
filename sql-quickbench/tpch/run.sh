@@ -57,24 +57,22 @@ prepare_template() {
 
 run_df_once() {
     local query_file="$1"
-    local start end
-    start=$(now_ms)
-    if ! "$DF_CLI" --username "$DF_USERNAME" --password "$DF_PASSWORD" -y run "$query_file" >/dev/null 2>&1; then
-        return 1
-    fi
-    end=$(now_ms)
-    awk -v a="$start" -v b="$end" 'BEGIN{printf "%.3f", (b-a)/1000.0}'
+    local out total_ms
+    out=$( { printf 'SHOW STATS ACTUAL '; cat "$query_file"; } \
+        | "$DF_CLI" --username "$DF_USERNAME" --password "$DF_PASSWORD" --format json 2>/dev/null) || return 1
+    total_ms=$(echo "$out" | grep -A1 '"metric": "total_time_ms"' \
+        | grep '"value"' | sed 's/.*"value": "\([^"]*\)".*/\1/')
+    [[ -n "$total_ms" ]] || return 1
+    awk -v ms="$total_ms" 'BEGIN{printf "%.3f", ms/1000.0}'
 }
 
 run_duck_once() {
     local query_file="$1"
-    local start end
-    start=$(now_ms)
-    if ! "$DUCKDB" :memory: < "$query_file" >/dev/null 2>&1; then
-        return 1
-    fi
-    end=$(now_ms)
-    awk -v a="$start" -v b="$end" 'BEGIN{printf "%.3f", (b-a)/1000.0}'
+    local out sql_s
+    out=$( { printf '.timer on\n'; cat "$query_file"; } | "$DUCKDB" :memory: 2>/dev/null) || return 1
+    sql_s=$(echo "$out" | awk 'match($0, /real ([0-9.]+)/, m) { print m[1]; exit }')
+    [[ -n "$sql_s" ]] || return 1
+    printf "%.3f" "$sql_s"
 }
 
 bench_query() {

@@ -49,20 +49,30 @@ now_ms() { python -c 'import time; print(int(time.time()*1000))' 2>/dev/null || 
 
 run_df_once() {
     local script="$1"
-    local start end
-    start=$(now_ms)
-    "$DF_CLI" --username "$DF_USERNAME" --password "$DF_PASSWORD" -y run "$HERE/$script" >/dev/null 2>&1 || return 1
-    end=$(now_ms)
-    awk -v a="$start" -v b="$end" 'BEGIN{printf "%.3f", (b-a)/1000.0}'
+    local out total_ms
+    # Run via SHOW STATS ACTUAL (piped stdin) to get engine-internal total_time_ms,
+    # excluding auth + binary startup. The 4-column result schema is:
+    #   (category, metric, value, unit)
+    out=$( { printf 'SHOW STATS ACTUAL '; cat "$HERE/$script"; } \
+        | "$DF_CLI" --username "$DF_USERNAME" --password "$DF_PASSWORD" --format json 2>/dev/null) || return 1
+    # Extract total_time_ms value from serde_json pretty-printed output.
+    # In pretty form each key lands on its own line: find the metric line then
+    # grab the "value" line immediately after it.
+    total_ms=$(echo "$out" | grep -A1 '"metric": "total_time_ms"' \
+        | grep '"value"' | sed 's/.*"value": "\([^"]*\)".*/\1/')
+    [[ -n "$total_ms" ]] || return 1
+    awk -v ms="$total_ms" 'BEGIN{printf "%.3f", ms/1000.0}'
 }
 
 run_duck_once() {
     local script="$1"
-    local start end
-    start=$(now_ms)
-    "$DUCKDB" <"$HERE/$script" >/dev/null 2>&1 || return 1
-    end=$(now_ms)
-    awk -v a="$start" -v b="$end" 'BEGIN{printf "%.3f", (b-a)/1000.0}'
+    local out sql_s
+    # Use DuckDB's built-in .timer to get engine-internal timing in seconds,
+    # comparable to DF's SHOW STATS total_time_ms.
+    out=$( { printf '.timer on\n'; cat "$HERE/$script"; } | "$DUCKDB" 2>/dev/null) || return 1
+    sql_s=$(echo "$out" | awk 'match($0, /real ([0-9.]+)/, m) { print m[1]; exit }')
+    [[ -n "$sql_s" ]] || return 1
+    printf "%.3f" "$sql_s"
 }
 
 bench_pair() {

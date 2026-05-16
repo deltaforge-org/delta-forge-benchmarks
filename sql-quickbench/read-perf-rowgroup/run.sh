@@ -65,20 +65,22 @@ now_ms() { python -c 'import time; print(int(time.time()*1000))' 2>/dev/null || 
 
 run_df_once() {
     local script="$1"
-    local start end
-    start=$(now_ms)
-    "$DF_CLI" --username "$DF_USERNAME" --password "$DF_PASSWORD" -y run "$script" >/dev/null 2>&1 || return 1
-    end=$(now_ms)
-    awk -v a="$start" -v b="$end" 'BEGIN{printf "%.3f", (b-a)/1000.0}'
+    local out total_ms
+    out=$( { printf 'SHOW STATS ACTUAL '; cat "$script"; } \
+        | "$DF_CLI" --username "$DF_USERNAME" --password "$DF_PASSWORD" --format json 2>/dev/null) || return 1
+    total_ms=$(echo "$out" | grep -A1 '"metric": "total_time_ms"' \
+        | grep '"value"' | sed 's/.*"value": "\([^"]*\)".*/\1/')
+    [[ -n "$total_ms" ]] || return 1
+    awk -v ms="$total_ms" 'BEGIN{printf "%.3f", ms/1000.0}'
 }
 
 run_duck_once() {
     local script="$1"
-    local start end
-    start=$(now_ms)
-    "$DUCKDB" <"$script" >/dev/null 2>&1 || return 1
-    end=$(now_ms)
-    awk -v a="$start" -v b="$end" 'BEGIN{printf "%.3f", (b-a)/1000.0}'
+    local out sql_s
+    out=$( { printf '.timer on\n'; cat "$script"; } | "$DUCKDB" 2>/dev/null) || return 1
+    sql_s=$(echo "$out" | awk 'match($0, /real ([0-9.]+)/, m) { print m[1]; exit }')
+    [[ -n "$sql_s" ]] || return 1
+    printf "%.3f" "$sql_s"
 }
 
 setup_one_shot() {
