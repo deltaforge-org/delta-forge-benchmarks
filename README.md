@@ -418,6 +418,43 @@ optimizations (Z-order on DeltaForge, OPTIMIZE on Spark) are run if
 the engine supports them, with the wall-clock time recorded in the
 load-phase row of `manifest.json`.
 
+### Workload: ClickBench (opt-in)
+
+ClickBench (`workloads/clickbench.py`) is a separately-installed dataset
+because the source parquet is ~14 GB and would bloat the docker image
+and disk footprint for users who only run TPC-H. The image itself does
+NOT include ClickBench data; the workload module is present and shows up
+in `--help` listings but emits zero measured steps until the data is
+fetched.
+
+To install:
+
+```bash
+./scripts/setup_clickbench.sh
+```
+
+That script invokes `data_gen/get_clickbench.py` inside the bench
+container, which downloads:
+
+- `hits.parquet` (14 GB) into the `bench_data` docker volume at
+  `/workspace/data/clickbench/hits.parquet`. The volume is separate
+  from the image and from the host bench repo.
+- The 43 canonical queries from the upstream ClickHouse/ClickBench
+  GitHub into `workloads/clickbench/queries/q00.sql` ... `q42.sql`.
+
+Re-running the script is idempotent (skips the download if the parquet
+is already at the expected byte count).
+
+Run the workload with:
+
+```bash
+docker compose exec bench python bench_runner.py \
+  --engines df,duckdb,spark-default --workloads clickbench --no-purge
+```
+
+Results are directly comparable to the public ClickBench leaderboard at
+<https://benchmark.clickhouse.com/>.
+
 ### Run protocol
 
 For each engine, for each scale factor, for each query:

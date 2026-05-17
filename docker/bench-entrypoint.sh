@@ -92,7 +92,7 @@ mkdir -p "${DELTA_FORGE_CONFIG_DIR}"
 
 # ----- 3. Start delta-forge-server (control plane) ----------------------------
 
-CONTROL_HEALTH_URL="${CONTROL_HEALTH_URL:-http://127.0.0.1:3000/health}"
+CONTROL_HEALTH_URL="${CONTROL_HEALTH_URL:-http://127.0.0.1:3000/api/v1/health}"
 COMPUTE_HEALTH_URL="${COMPUTE_HEALTH_URL:-http://127.0.0.1:3031/health}"
 
 echo "[entrypoint] starting delta-forge-server (bind ${DELTA_FORGE_BIND_ADDR})"
@@ -108,16 +108,25 @@ echo "[entrypoint] starting delta-forge-server (bind ${DELTA_FORGE_BIND_ADDR})"
 #   Pass 2 (background):  config.toml present → server skips bootstrap,
 #            goes straight to ensure_ready + serve, acquires the lock fresh.
 
-echo "[entrypoint] pass 1: headless bootstrap (server will exit after writing config.toml)"
-delta-forge-server >> "${LOG_DIR}/control.log" 2>&1 || true
-
 CONFIG_FILE="${DELTA_FORGE_CONFIG_DIR}/config.toml"
+
+# Pass 1 is only needed on a fresh bench_dfconfig volume. Once config.toml
+# exists, the server skips bootstrap and stays in serve mode forever — running
+# it synchronously would hang the entrypoint. Skip directly to pass 2 in that
+# case so container restarts work after bootstrap has already happened.
 if [ ! -f "${CONFIG_FILE}" ]; then
-    echo "[entrypoint] ERROR: pass 1 did not write ${CONFIG_FILE}; aborting" >&2
-    tail -20 "${LOG_DIR}/control.log" >&2
-    exit 1
+    echo "[entrypoint] pass 1: headless bootstrap (server will exit after writing config.toml)"
+    delta-forge-server >> "${LOG_DIR}/control.log" 2>&1 || true
+
+    if [ ! -f "${CONFIG_FILE}" ]; then
+        echo "[entrypoint] ERROR: pass 1 did not write ${CONFIG_FILE}; aborting" >&2
+        tail -20 "${LOG_DIR}/control.log" >&2
+        exit 1
+    fi
+    echo "[entrypoint] pass 1 complete — config.toml written"
+else
+    echo "[entrypoint] pass 1 skipped: ${CONFIG_FILE} already present"
 fi
-echo "[entrypoint] pass 1 complete — config.toml written"
 echo "[entrypoint] pass 2: starting server in serve mode"
 
 nohup delta-forge-server >> "${LOG_DIR}/control.log" 2>&1 &

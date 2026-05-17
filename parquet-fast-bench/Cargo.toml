@@ -13,6 +13,7 @@ path = "src/lib.rs"
 [dependencies]
 # Subjects under test.
 delta-forge-parquet-fast = { path = "../../delta-forge-parquet-fast" }
+delta-forge-parquet-io = { path = "../../delta-forge-parquet-io" }
 delta-forge-io = { path = "../../delta-forge-io" }
 
 # Parquet write side (fixture generation) and the upstream reader we

@@ -1,0 +1,67 @@
+# Windows-host overrides for the bench compose stack.
+#
+# Why this file exists:
+#   1. The Neo4j 5 community image runs `chown -R neo4j /var/lib/neo4j/import`
+#      on startup. With Docker Desktop on Windows, bind-mounts cannot satisfy
+#      Linux chown, so the entrypoint exits 1. Drop the `:ro` flag so chown
+#      becomes a no-op rather than a hard error on the read-only filesystem.
+#
+#   2. The dropcaches sidecar listens on a Unix-domain socket bind-mounted
+#      from the Windows host. Windows hosts cannot back a Unix socket through
+#      Docker Desktop, so the sidecar crashes with "Is a directory" on the
+#      socket path. Replace its image and entrypoint with a no-op so
+#      `depends_on` resolves. The bench harness will see no socket and label
+#      runs as `cold-os-cache=unverified` (documented .env.example behavior).
+#
+#   3. The baked-in bench-entrypoint.sh polls /health on the control plane,
+#      but the API is mounted at /api/v1/health. The mismatch makes
+#      wait_for_health time out and the container exit 1 even though the
+#      server is healthy. Bind-mount the patched script over the baked-in
+#      one so the fix takes effect without rebuilding the image.
+#
+# Compose v2 auto-loads docker-compose.override.yml when it sits next to the
+# base file. Linux hosts that want the real dropcaches sidecar should rename
+# or remove this file.
+
+services:
+  neo4j:
+    volumes:
+      - !reset []
+      - bench_neo4j_data:/data
+      - bench_neo4j_logs:/logs
+      - bench_neo4j_plugins:/plugins
+      - ../data:/var/lib/neo4j/import
+
+  dropcaches:
+    image: alpine:3
+    build: !reset null
+    privileged: false
+    entrypoint: ["sh", "-c", "echo 'dropcaches disabled on Windows host'; exec sleep infinity"]
+    volumes: !reset []
+    restart: "no"
+
+  bench:
+    volumes:
+      # Override the baked-in entrypoint with the patched copy from the host.
+      - ./bench-entrypoint.sh:/usr/local/bin/bench-entrypoint.sh:ro
+      # The license manager writes ~/.deltaforge/license.key (HOME=/root in the
+      # container). Without this volume the license file dies on every
+      # `docker compose up -d bench` recreate, leaving the server unlicensed
+      # even though config.toml in bench_dfconfig is still valid.
+      - bench_root_deltaforge:/root/.deltaforge
+    environment:
+      # engines/df_engine.py defaults DF_USERNAME to "admin", but the
+      # bootstrapped admin's login id is the email address. Match it.
+      DF_USERNAME: "${DELTA_FORGE_ADMIN_EMAIL:-admin@deltaforge.local}"
+      DF_PASSWORD: "${DELTA_FORGE_ADMIN_PASSWORD}"
+      # The worker registers itself with the control plane using BIND_HOST as
+      # the dispatch URL, and the CLI then connects there. 127.0.0.1 only
+      # works from inside the worker process itself; from the bench python
+      # process (same container, different network namespace? same), the
+      # control plane redirects to <container-ip>:3031, which only resolves
+      # when the worker listens on all interfaces.
+      BIND_HOST: "0.0.0.0"
+
+volumes:
+  bench_root_deltaforge:
+    driver: local

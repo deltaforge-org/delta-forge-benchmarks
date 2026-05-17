@@ -18,6 +18,7 @@ The adapter exposes:
 from __future__ import annotations
 
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -133,9 +134,30 @@ class SparkDefaultEngine(Engine):
             elif step.kind in (STEP_SQL_DDL, STEP_SQL_DML, STEP_MAINTENANCE):
                 if not step.sql:
                     raise ValueError(f"{step.kind} step requires sql")
-                df = self._spark.sql(step.sql)
-                # Force execution. Spark .sql() returns a lazy DataFrame.
-                _ = df.collect()
+                # Spark's .sql() accepts only one statement at a time. Split
+                # on `;` so workloads can hand us drop-then-create-then-insert
+                # scripts the same way df does. Engine-reported-ms is the sum
+                # of per-statement queryExecution durations.
+                stmts = _split_sql_statements(step.sql)
+                if not stmts:
+                    raise ValueError(f"{step.kind} step has no statements")
+                summed_ns = 0
+                saw_any_ns = False
+                for stmt in stmts:
+                    df = self._spark.sql(stmt)
+                    _ = df.collect()
+                    try:
+                        qe = df._jdf.queryExecution()
+                        phases = qe.tracker().phases()
+                        it = phases.entrySet().iterator()
+                        while it.hasNext():
+                            e = it.next()
+                            summed_ns += int(e.getValue().durationMs()) * 1_000_000
+                            saw_any_ns = True
+                    except Exception:
+                        pass
+                if saw_any_ns and summed_ns > 0:
+                    engine_reported_ms = summed_ns / 1_000_000.0
 
             elif step.kind == STEP_SQL_QUERY:
                 if not step.sql:
@@ -182,6 +204,38 @@ class SparkDefaultEngine(Engine):
             exit_code=exit_code,
             error=error,
         )
+
+
+_SEMI_RE = re.compile(r";")
+
+
+def _split_sql_statements(text: str) -> list[str]:
+    """Split a ``;``-terminated multi-statement script into individual
+    statements. Whitespace-only / comment-only fragments are dropped.
+    Mirrors engines/df_engine.py:_split_sql_statements so the two adapters
+    accept the same multi-statement workload SQL."""
+    out: list[str] = []
+    last = 0
+    for m in _SEMI_RE.finditer(text):
+        chunk = text[last:m.start()].strip()
+        last = m.end()
+        if not chunk:
+            continue
+        non_comment = "\n".join(
+            line for line in chunk.splitlines()
+            if line.strip() and not line.strip().startswith("--")
+        )
+        if non_comment.strip():
+            out.append(chunk)
+    tail = text[last:].strip()
+    if tail:
+        non_comment = "\n".join(
+            line for line in tail.splitlines()
+            if line.strip() and not line.strip().startswith("--")
+        )
+        if non_comment.strip():
+            out.append(tail)
+    return out
 
 
 def _failure(step_id: str, message: str) -> StepResult:

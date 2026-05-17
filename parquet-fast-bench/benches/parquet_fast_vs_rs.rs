@@ -46,6 +46,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use futures::StreamExt;
+
 use arrow::array::{Array, BooleanArray, StringArray};
 use arrow::record_batch::RecordBatch;
 use criterion::{
@@ -63,6 +65,7 @@ use delta_forge_parquet_fast::byte_range::ParquetByteRange;
 use delta_forge_parquet_fast::predicate_filter::apply_predicates;
 use delta_forge_parquet_fast::row_selection_adapter::split_row_selection_per_row_group;
 use delta_forge_parquet_fast::test_helpers::collect_row_group_to_batch;
+use delta_forge_parquet_io::open_per_row_group_stream;
 
 use delta_forge_parquet_fast_bench::{
     load_metadata, open_byte_range, Fixtures, ROWS_BULK, ROWS_POINT,
@@ -222,21 +225,35 @@ fn parquet_rs_row_selection_scan(
 
 // ---------- fast-reader side -------------------------------------
 
-/// Run the fast reader's `row_group_to_batch` over every row group
-/// in `metadata`, projecting the supplied leaf columns and applying
-/// the supplied per-rg row mask (if any). Returns the total number
-/// of rows decoded across all row groups.
+/// Stream every row group in `metadata` through the production entry
+/// point `open_per_row_group_stream`, which auto-selects the batch
+/// size (FULL_SCAN_BATCH_SIZE for no-mask paths). No concat pass.
 async fn fast_full_scan(
     range: &ParquetByteRange,
     metadata: &ParquetMetaData,
     projected_leaves: &[usize],
 ) -> usize {
+    let range_arc = Arc::new(range.clone());
+    let meta_arc = Arc::new(metadata.clone());
+    let roots: Vec<usize> = projected_leaves.to_vec();
     let mut rows = 0usize;
     for rg_idx in 0..metadata.num_row_groups() {
-        let batch = collect_row_group_to_batch(range, metadata, rg_idx, projected_leaves, None, 0)
-            .await
-            .expect("fast reader collect_row_group_to_batch");
-        rows += batch.num_rows();
+        let mut s = open_per_row_group_stream(
+            range_arc.clone(),
+            meta_arc.clone(),
+            rg_idx,
+            projected_leaves.to_vec(),
+            roots.clone(),
+            None,
+            None,
+            8192,
+            Vec::new(),
+        )
+        .await
+        .expect("fast reader stream");
+        while let Some(batch_result) = s.next().await {
+            rows += batch_result.expect("fast reader batch").num_rows();
+        }
     }
     rows
 }

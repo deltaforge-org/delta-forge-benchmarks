@@ -53,6 +53,7 @@ ENGINE_REGISTRY = {
     "spark-default": ("engines.spark_default_engine", "SparkDefaultEngine"),
     "spark-tuned":   ("engines.spark_tuned_engine",   "SparkTunedEngine"),
     "df":            ("engines.df_engine",            "DeltaForgeEngine"),
+    "duckdb":        ("engines.duckdb_engine",        "DuckDBEngine"),
     "neo4j":         ("engines.neo4j_engine",         "Neo4jEngine"),
 }
 
