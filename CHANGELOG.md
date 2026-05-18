@@ -5,6 +5,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added (Delta-read drop-in workloads: TPC-DS, SSB, JOB)
+- **`tpcds_read_delta` workload**: 99 canonical TPC-DS queries on the 24-table snowflake against plain Delta. Same shape as `tpch_read_delta` (per-engine attach paths, df OPEN preamble, `SHOW STATS ACTUAL` wrap). Queries are the official TPC-DS templates instantiated at seed=0, extracted from DuckDB's `tpcds` extension. Generator: `data_gen/generate_tpcds_delta.py`. Fixture: `data/tpcds_sf{N}_delta/`.
+- **`ssb_read_delta` workload**: 13 Star Schema Benchmark queries (O'Neil et al., 2009) on a 5-table star. The fixture is derived in SQL from the existing TPC-H plain-Delta tables following the canonical TPC-H -> SSB mapping, so SSB at SF=N reuses the TPC-H SF=N fixture. Generator: `data_gen/generate_ssb_delta.py`. Fixture: `data/ssb_sf{N}_delta/`.
+- **`job_read_delta` workload**: 113 Join Order Benchmark queries (Leis et al., VLDB 2015) on the 21-table IMDB snapshot. Fixed-size (no scale factor). Generator downloads `imdb.tgz` from the JOB authors' CWI mirror, applies the schema via DuckDB, exports to parquet, then Spark writes plain Delta. Queries committed under `workloads/job/queries/` from the upstream MIT-licensed `gregrahn/join-order-benchmark` repo. Generator: `data_gen/generate_job_delta.py`. Fixture: `data/job_delta/`.
+- All three follow the same drop-in pattern as `tpch_read_delta` and need no bench_runner registry edit; they are discovered automatically.
+
+### Removed
+- **Neo4j / `graph_finance` chapter** dropped from the bench. The benchmark
+  is scoped to engines reading and writing Delta tables; Neo4j cannot read
+  Delta, so a head-to-head against it was comparing graph stores, not
+  Delta engines, and belonged in a separate suite. Deleted files:
+  `engines/neo4j_engine.py`, `workloads/graph_finance.py`,
+  `data_gen/generate_graph_finance.py`, `workloads/graph/`. Stripped
+  `neo4j` from `bench_runner.py`'s engine registry, the `_purge.py`
+  cache-clear helper, `docker-compose.yml` + `docker-compose.override.yml`
+  service definitions and env vars, and the `neo4j==5.26.0` line in
+  `requirements.txt`. The README's "Graph chapter" section was removed
+  and the future-chapters roadmap trimmed to Delta-only workloads.
+- **Future-chapters list trimmed.** The roadmap previously listed v0.2
+  through v0.9 chapters as if they were funded; replaced with a
+  "Next / If asked" two-tier list and an explicit "considered and not
+  included" note (ClickBench raw fixture, TPC-C, YCSB, graph benchmarks).
+
 ### Added (Graph chapter: DeltaForge vs Neo4j)
 - **`graph_finance` workload** (`workloads/graph_finance.py`): 14 portable Cypher queries exercising MATCH expansion, WHERE filters, aggregations, and the five GDS algorithms (PageRank, WCC, Louvain, Triangle Count, Betweenness) against a 10M-account synthetic global-banking graph. Workload declares `applicable_engines = ('df', 'neo4j')`, so the runner skips it on Spark.
 - **Neo4j engine adapter** (`engines/neo4j_engine.py`): Bolt client to the compose-managed neo4j service. Lifecycle probes `RETURN 1` until the server accepts connections; queries record wall-clock + `result_available_after + result_consumed_after` as the engine-reported time. Stochastic algorithms (Louvain, sampled betweenness, PageRank float-precision) are timed only; deterministic queries (counts, MATCH, WCC component-size distribution, triangle-count top-K) are hashed cross-engine for correctness validation. Memory metrics are not collected because the neo4j JVM lives in a different container.

@@ -54,15 +54,20 @@ class Workload:
     applicable_engines: tuple[str, ...] | None = None
     """If set, the runner only schedules this workload for the engines listed.
     Engines outside the list are silently skipped (with a one-line note in
-    the log). Used by graph workloads that only make sense on engines with
-    a graph runtime (e.g. df, neo4j) and not Spark. None means the workload
-    runs on every engine in the run."""
+    the log). Used by workloads with engine-specific applicability (e.g. a
+    Delta-write workload skips DuckDB because its `delta` extension is
+    read-only). None means the workload runs on every engine in the run."""
 
     data_subdir: str = "tpch_sf{scale}"
     """Sub-path under `data/` that this workload reads from. The default
-    matches the TPC-H workloads. Graph workloads override to e.g.
-    'graph_finance_sf{scale}'. Substituted at runtime: '{scale}' becomes
-    the active scale factor."""
+    matches the TPC-H workloads; workloads with their own fixture override.
+    Substituted at runtime: '{scale}' becomes the active scale factor."""
+
+    requires_input_data: bool = True
+    """True for read workloads: the runner pre-flights that the data_subdir
+    contains parquet files before scheduling. False for write workloads
+    that produce data from synthetic generators and have no on-disk input
+    requirement; the pre-flight check is then skipped."""
 
 
 @dataclasses.dataclass

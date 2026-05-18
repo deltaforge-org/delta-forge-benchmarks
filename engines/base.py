@@ -67,14 +67,13 @@ class WorkloadStep:
     """Optional per-engine override of `sql`. When the runner resolves a step
     for a specific engine and the engine's name appears as a key here, the
     adapter sees that variant in `step.sql` instead of the default. Used by
-    workloads where the same logical step has divergent dialect (e.g. DF
-    Cypher's `algo.pageRank(...)` vs Neo4j GDS's `gds.pageRank.stream(...)`)."""
+    workloads where the same logical step has engine-specific dialect (e.g.
+    df's `OPEN DELTA TABLE` preamble for `tpch_read_delta`)."""
 
     per_engine_kind: dict[str, str] | None = None
-    """Optional per-engine override of `kind`. The graph_finance load step
-    is SQL DDL on DF and Cypher DML on Neo4j; the workload sets this dict
-    to ``{'df': STEP_SQL_DDL, 'neo4j': STEP_CYPHER_DML}`` so each adapter
-    sees the kind it accepts."""
+    """Optional per-engine override of `kind`. Lets a single logical step
+    compile to a different kind on different engines (e.g. SQL DDL on one,
+    Cypher DML on another)."""
 
     fn: Callable[["Engine"], Any] | None = None
     """Python callable for STEP_PYTHON. Receives the engine adapter so it

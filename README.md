@@ -1,13 +1,17 @@
 # delta-forge-benchmarks
 
 A reproducible, scripted, single-host benchmark suite comparing **DeltaForge**
-against **Apache Spark** on the TPC-H workload. Designed to survive hostile
-reading: every input is deterministic, every artifact is published, every
-configuration is auditable.
+against **DuckDB** (with the read-only `delta` extension) and **Apache Spark**
+(default + tuned) on the TPC-H workload, read against **plain Delta tables**
+(no deletion vectors, no column mapping, no row tracking). Designed to
+survive hostile reading: every input is deterministic, every artifact is
+published, every configuration is auditable.
 
-> **Status:** v0.1 in progress. Phase 1 (skeleton + Docker stack) is done; data
-> generation, engine adapters, and the first published run are still pending.
-> See `CHANGELOG.md` for what is in this checkout today.
+> **Status:** v0.1 in progress. The TPC-H Delta read chapter
+> (`tpch_read_delta`) runs end-to-end across all three engines at SF=1 with
+> zero failures; the SF=10 publish target is still pending a reference host.
+> See `CHANGELOG.md` for what is in this checkout today, and the "Reproduced
+> SF=1 numbers" section below for the current head-to-head.
 
 ---
 
@@ -22,6 +26,57 @@ your own machine that are directly comparable to the numbers we publish under
 **This is not** a marketing benchmark. There is no cherry-picking. Queries
 where DeltaForge ties or loses are reported in the executive summary, by
 name, with the slowdown factor.
+
+## Reproduced SF=1 numbers (`tpch_read_delta`)
+
+22 canonical TPC-H queries against plain Delta tables, 1 cold + 9 warm per
+query, warm-median in milliseconds. Same on-disk Delta fixture for all three
+engines. df numbers are server-reported `SHOW STATS ACTUAL.total_time_ms`
+(plan + compile + execute + drain, table-attach excluded); DuckDB and Spark
+numbers are wall-clock around the SELECT (their views are pre-registered in
+untimed setup). Hardware: 8 cgroup CPUs / 16 GiB memory on a WSL2 host
+backed by ext4 (read 1815 MB/s, write 740 MB/s).
+
+| query  |       df  |  duckdb  | spark-default |
+|--------|----------:|---------:|--------------:|
+| q01    |    425.92 |   166.27 |       2874.65 |
+| q02    |    127.37 |    88.36 |       1781.71 |
+| q03    |    241.23 |   152.08 |       1487.62 |
+| q04    |    172.71 |   129.73 |       1168.42 |
+| q05    |    312.58 |   169.18 |       2180.74 |
+| q06    |    107.70 |    90.25 |        332.50 |
+| q07    |    255.28 |   189.86 |       1735.43 |
+| q08    |    251.16 |   228.63 |       2019.68 |
+| q09    |    368.09 |   294.45 |       2209.83 |
+| q10    |    267.01 |   272.03 |       1991.91 |
+| q11    |     80.39 |    86.51 |       1353.59 |
+| q12    |    206.36 |   142.88 |        975.94 |
+| q13    |    195.88 |   178.06 |       1159.62 |
+| q14    |    108.01 |   124.14 |        606.29 |
+| q15    |    139.08 |   115.55 |       1271.87 |
+| q16    |    134.59 |   144.87 |       1234.12 |
+| q17    |    230.06 |   174.15 |       1552.87 |
+| q18    |    606.21 |   200.55 |       2573.95 |
+| q19    |    172.15 |   186.22 |        621.91 |
+| q20    |    158.91 |   179.26 |       1444.99 |
+| q21    |    428.13 |   397.57 |       3194.64 |
+| q22    |     94.54 |   131.29 |       1356.99 |
+| median |    202.93 |   161.85 |       1486.19 |
+
+**Headline.** On the warm-median across 22 queries, DeltaForge is **~1.25x
+slower than DuckDB** (203 ms vs 162 ms) and **~7.3x faster than stock-OSS
+Spark** (203 ms vs 1486 ms). df wins 7 of 22 against DuckDB (q10, q11, q14,
+q16, q19, q20, q22, plus q11 effectively tied) and wins **22 of 22 against
+Spark**. DuckDB's largest wins over df are on high-cardinality aggregations
+(q18 3.02x, q01 2.56x) and complex multi-join plans (q05 1.85x, q03 1.59x);
+df's largest wins over DuckDB are simple aggregations and small scans where
+its planner overhead is the smaller fraction (q22 1.39x).
+
+**The SF=1 caveat.** At SF=1, every engine finishes most queries in under
+half a second; noise dominates ratios near 1.0x and engine architecture
+differences only show up at the extremes. The SF=10 publish (under prep) is
+where engine differences emerge cleanly; SF=1 is the smoke test that proves
+the harness, the fixture, and the three engine paths are honest.
 
 ## Design invariants (non-negotiable)
 
@@ -408,52 +463,59 @@ the `org.opencontainers.image.licenses` label on the published image.
 
 ## Methodology
 
-### Workload: TPC-H
+### Workload: TPC-H, plain Delta read (`tpch_read_delta`)
 
 We use the canonical 22 TPC-H queries (`workloads/tpch/queries/q01.sql`
 through `q22.sql`). Schema is the standard 8 tables (lineitem, orders,
-customer, supplier, part, partsupp, nation, region). Both engines load
-the same Parquet files into Delta-format tables. Engine-specific
-optimizations (Z-order on DeltaForge, OPTIMIZE on Spark) are run if
-the engine supports them, with the wall-clock time recorded in the
-load-phase row of `manifest.json`.
+customer, supplier, part, partsupp, nation, region).
 
-### Workload: ClickBench (opt-in)
+The fixture is **plain Delta** (`data_gen/generate_tpch_delta.py`): each
+table is written once into `/workspace/data/tpch_sf<N>_delta/<table>/`
+with `delta.enableDeletionVectors = false`, `delta.columnMapping.mode =
+'none'`, and `delta.enableRowTracking = false`. All three engines read the
+same on-disk Delta files. The fixture is plain rather than the modern DV +
+column-mapping default because DuckDB's read-only `delta` extension only
+supports the plain protocol; the alternative was to drop DuckDB from the
+comparison, which would have removed the most useful single-node baseline
+for DeltaForge.
 
-ClickBench (`workloads/clickbench.py`) is a separately-installed dataset
-because the source parquet is ~14 GB and would bloat the docker image
-and disk footprint for users who only run TPC-H. The image itself does
-NOT include ClickBench data; the workload module is present and shows up
-in `--help` listings but emits zero measured steps until the data is
-fetched.
+**Table attach is not part of the measured time.** Each engine attaches its
+view of the Delta directory once, before any timed query, and pays no
+attach cost during the measurement:
 
-To install:
+- **DuckDB**: `INSTALL delta; LOAD delta;` plus one
+  `CREATE OR REPLACE VIEW <t> AS SELECT * FROM delta_scan('<path>')` per
+  table, in the workload's untimed `setup_steps`.
+- **Spark**: one
+  `CREATE OR REPLACE TEMPORARY VIEW <t> USING delta OPTIONS (path '<path>')`
+  per table, in `setup_steps`.
+- **DeltaForge**: a per-query
+  `OPEN DELTA TABLE '<path>' AS <t>` preamble is prepended to each
+  measured SELECT (DeltaForge sessions are short-lived and `OPEN` is
+  session-scoped, so the preamble runs once per CLI invocation alongside
+  the query). The DF engine adapter splits the multi-statement script,
+  runs the OPENs as untimed preamble, and wraps **only the final SELECT**
+  with `SHOW STATS ACTUAL`. The `total_time_ms` value `SHOW STATS ACTUAL`
+  returns is what the headline table reports for DF: it covers plan +
+  compile + execute + drain for the SELECT, but excludes the OPENs.
 
-```bash
-./scripts/setup_clickbench.sh
-```
+**Why `SHOW STATS ACTUAL`, not bare `execution_time_ms`.** The CLI's plain
+`execution_time_ms` field is measured at the handler return point, which
+is before the partition-ticket drain finishes on the streaming path. On
+SF=1 it under-reports the real query time by 3-5x. `SHOW STATS ACTUAL`
+runs the same query under an instrumented executor that does not return
+until the last batch is drained, so its `total_time_ms` is the honest
+end-to-end execution time. Using bare `execution_time_ms` would have made
+DeltaForge look 3-5x faster than it actually is, so we don't.
 
-That script invokes `data_gen/get_clickbench.py` inside the bench
-container, which downloads:
-
-- `hits.parquet` (14 GB) into the `bench_data` docker volume at
-  `/workspace/data/clickbench/hits.parquet`. The volume is separate
-  from the image and from the host bench repo.
-- The 43 canonical queries from the upstream ClickHouse/ClickBench
-  GitHub into `workloads/clickbench/queries/q00.sql` ... `q42.sql`.
-
-Re-running the script is idempotent (skips the download if the parquet
-is already at the expected byte count).
-
-Run the workload with:
-
-```bash
-docker compose exec bench python bench_runner.py \
-  --engines df,duckdb,spark-default --workloads clickbench --no-purge
-```
-
-Results are directly comparable to the public ClickBench leaderboard at
-<https://benchmark.clickhouse.com/>.
+**SQL gap (documented).** DeltaForge today has no SQL command that
+persistently registers an existing Delta directory in the catalog;
+`REGISTER TABLE`, `OPEN DELTA TABLE`, and `CREATE DELTA TABLE IF NOT
+EXISTS` all collapse to a session-scoped attach. The OPEN preamble pattern
+is the bench's workaround. See [docs/bug/sql-gap-persistent-delta-attach.md](../docs/bug/sql-gap-persistent-delta-attach.md)
+in the engine repo for the three proposed fix shapes; once one lands, the
+preamble goes away and df setup becomes a single one-time DDL like the
+other engines.
 
 ### Run protocol
 
@@ -501,17 +563,16 @@ from the cold-time aggregate.
 ├── bench_runner.py              # main entry point
 ├── engines/
 │   ├── df_engine.py             # DeltaForge: drives delta-forge-cli + control + worker
+│   ├── duckdb_engine.py         # DuckDB with the read-only delta extension
 │   ├── spark_default_engine.py  # Spark with stock-OSS defaults
 │   ├── spark_tuned_engine.py    # Spark with AQE + tuned shuffle partitions + executor memory
 │   ├── _spark_session.py        # vendored from delta-forge engine repo, pinned at DF_GIT_SHA
 │   └── _purge.py                # explicit between-engine state purge
-├── workloads/tpch/
-│   ├── schema.sql               # 8-table TPC-H DDL (Delta format)
-│   ├── load.sql                 # COPY INTO from generated parquet
-│   └── queries/q01.sql ... q22.sql
+├── workloads/
+│   ├── tpch_read_delta.py       # 22 TPC-H queries against plain Delta tables
+│   └── tpch/queries/q01.sql ... q22.sql
 ├── data_gen/
-│   ├── generate_tpch.py         # dbgen wrapper, emits parquet via DuckDB
-│   └── dbgen-src/               # vendored TPC-H dbgen (you populate this; see data_gen/README.md)
+│   └── generate_tpch_delta.py   # writes plain Delta (DV/CM/RT off) via Spark, one-time fixture
 ├── docker/
 │   ├── Dockerfile               # single bundled image with both engines
 │   ├── Dockerfile.dropcaches    # privileged sidecar (~10 lines, audit it yourself)
@@ -536,144 +597,104 @@ opening source files. The "stock-defaults" config mirrors the default in
 [delta-forge-demos/verify_lib/spark_session.py](https://github.com/) at the
 pinned `DF_GIT_SHA`: `local[*]`, 4 GB driver, no AQE override.
 
-## Graph chapter: DeltaForge vs Neo4j
+## Additional Delta-read drop-in workloads (`tpcds_read_delta`, `ssb_read_delta`, `job_read_delta`)
 
-The `graph_finance` workload is a head-to-head Cypher comparison against
-**Neo4j Community 5.x + GDS Community**. It exists alongside the TPC-H
-chapter; same harness, same statistical reporting, same correctness-hash
-mechanism. It only runs on engines with a graph runtime (DeltaForge,
-Neo4j); the runner skips it on the Spark adapters via the workload's
-`applicable_engines` declaration.
+Three more standardized read workloads ship in the same shape as
+`tpch_read_delta`: same plain-Delta protocol, same per-engine setup
+(DuckDB views in setup, Spark views in setup, df OPEN preamble per
+query), same `SHOW STATS ACTUAL` measurement contract. Each one has a
+one-shot data-gen script under `data_gen/` and is published as a
+canonical Delta fixture under `/workspace/data/`. Once the fixture is
+generated, the workload runs the same way as TPC-H:
 
-### Dataset
-
-A synthetic global-banking-network graph mirroring the
-[`graph-gpu-10m-finance`](../delta-forge-demos/demos/graph/graph-gpu-10m-finance/)
-demo, generated by `data_gen/generate_graph_finance.py`. The generator is
-deterministic: re-running with the same `--scale` produces files with
-identical SHA-256s, recorded in the per-run manifest.
-
-| `--scale` | Nodes | Edges | Output size | Use |
-|---:|---:|---:|---:|---|
-| 1 | 100 000 | ~480 000 | ~70 MB | smoke / CI |
-| 10 | 1 000 000 | ~4 800 000 | ~700 MB | laptop standard (v0.1 graph headline) |
-| 100 | 10 000 000 | 48 099 998 | ~7 GB | demo-equivalent (matches the DF demo bit for bit) |
-
-Each scale produces four files in `data/graph_finance_sf<scale>/`:
-`accounts.parquet`, `transactions.parquet` (read by the DeltaForge side
-through Delta tables) and `accounts.csv`, `transactions.csv` with Neo4j
-bulk-import-style typed headers (`:ID(Account)`, `:START_ID`, `:END_ID`,
-`:TYPE`). Both engines see the same row counts and the same per-row
-values; the only column where the bench's data diverges from the demo's
-is the `name` column, because the demo uses Rust's `fake-rs` corpus and
-the bench uses a deterministic 100-name cyclic list (cross-language
-reproducibility wins over name realism).
-
-### Queries
-
-Fourteen portable Cypher queries in `workloads/graph_finance.py`. Each
-step carries a `per_engine_sql` map so the same logical query becomes:
-
-| ID | Description | Determinism |
-|---|---|---|
-| q01 | Total node count | deterministic |
-| q02 | Total edge count | deterministic |
-| q03 | Account count per bank (30 rows) | deterministic |
-| q04 | Edges where `transaction_type = 'advisory'` | deterministic |
-| q05 | Top 30 cross-bank pair counts + avg weight | deterministic |
-| q06 | Top 25 JPMorgan->JPMorgan edges by weight | deterministic |
-| q07 | Edge `transaction_type` distribution (18 rows) | deterministic |
-| q08 | Subgraph extraction: edges with both endpoint ids ≤ 100 | deterministic |
-| q09 | Per-bank count of `risk_tier = 'high'` accounts | deterministic |
-| q10 | GDS PageRank, top 25 by score (20 iterations) | timing-only (FP precision) |
-| q11 | GDS WCC component-size distribution | deterministic (sizes invariant) |
-| q12 | GDS Louvain community sizes | timing-only (stochastic) |
-| q13 | GDS Triangle Count, top 25 nodes | deterministic |
-| q14 | GDS Betweenness Centrality (sampled), top 25 | timing-only (stochastic) |
-
-Deterministic queries are hashed cross-engine: a digest mismatch is a
-release blocker, same as the TPC-H chapter. Timing-only queries run on
-both engines and report wall-clock + engine-reported milliseconds, but
-their result rows are not compared because the algorithm is intrinsically
-non-comparable across engines (floating-point summation order, sample
-selection, etc.).
-
-The DeltaForge variants run **CPU-only** (no `ON GPU` hint); Neo4j has no
-GPU path, so CPU-vs-CPU is the apples-to-apples comparison. A separate
-GPU variant of the same workload is future work.
-
-### Methodological choices
-
-- **GDS projection / `CREATE GRAPHCSR` is a setup step, not a measured
-  step.** Both engines pay this cost once before the timed queries
-  begin. Measuring it inside the per-query latency would inflate the
-  first-query number on both sides and obscure steady-state performance.
-- **Cold-run cache invalidation on Neo4j is partial.** The bench issues
-  `CALL db.clearQueryCaches()` over Bolt before each cold run, which
-  flushes the plan and result caches but not the OS page cache for files
-  on the neo4j container's volume. For a fully cold Neo4j run, run
-  `docker compose restart neo4j` between iterations; otherwise the
-  bench labels the runs `purge_verified=False` for that engine and the
-  report excludes them from the cold-time aggregate.
-- **Neo4j memory metrics are not collected.** The JVM runs in a
-  separate compose container and is not visible to `psutil` from the
-  bench container's view of `/proc`. The wall-clock and engine-reported
-  millis are the comparable numbers; for an RSS reading on the Neo4j
-  side use `docker stats bench-neo4j` during the run.
-- **Single relationship type (`:TRANSACTED`).** The 18 distinct
-  transaction types from the source graph live as a property
-  (`r.transaction_type`) on both engines, exactly as the DF demo models
-  them. This keeps the GDS projection a one-liner (`gds.graph.project(...)`
-  with one rel type) rather than fanning out into 18 projections.
-
-### Reproducing the graph chapter
-
-Generate the data, then run the bench scoped to the graph workload and
-the two engines that can run it:
-
-```
-python data_gen/generate_graph_finance.py --scale 10
-python bench_runner.py --scale 10 --engines df,neo4j --workloads graph_finance
+```bash
+docker compose exec bench python bench_runner.py --scale 1 \
+    --engines df,duckdb,spark-default --workloads tpcds_read_delta
 ```
 
-Or in the compose stack:
+| Workload | Standard | Queries | Tables | Fixture path | Generator |
+| --- | --- | --- | --: | --- | --- |
+| `tpcds_read_delta` | TPC-DS (TPC body) | 99 | 24 | `data/tpcds_sf{N}_delta/` | `data_gen/generate_tpcds_delta.py --scale N` |
+| `ssb_read_delta` | SSB (O'Neil et al., 2009) | 13 | 5 | `data/ssb_sf{N}_delta/` | `data_gen/generate_ssb_delta.py --scale N` |
+| `job_read_delta` | JOB (Leis et al., VLDB 2015) | 113 | 21 | `data/job_delta/` | `data_gen/generate_job_delta.py` |
 
-```
-docker compose --env-file .env up -d
-docker compose exec bench python data_gen/generate_graph_finance.py --scale 10
-docker compose exec bench python bench_runner.py \
-    --scale 10 --engines df,neo4j --workloads graph_finance
-```
+### TPC-DS (`tpcds_read_delta`)
 
-Recommended Neo4j memory at each scale tier (set in `.env` before
-`docker compose up -d`):
+99 canonical TPC-DS queries on the 24-table snowflake. Data generated
+by DuckDB's `tpcds` extension (in-process `dsdgen` call), exported to
+parquet, then rewritten as plain Delta via Spark. The 99 queries are
+the official TPC-DS templates instantiated at seed=0 (the upstream
+DuckDB-bundled set), extracted to `workloads/tpcds/queries/q01.sql`
+through `q99.sql` at setup time.
 
-| `--scale` | `NEO4J_HEAP` | `NEO4J_PAGECACHE` | Notes |
-|---:|---:|---:|---|
-| 1 | 1G | 1G | smoke; default values are oversized but harmless |
-| 10 | 4G | 4G | matches the compose default |
-| 100 | 8G | 16G | bump host RAM to 32 GB+; LOAD CSV at 48M edges takes ~1 hour |
+What TPC-DS adds over TPC-H: a much wider schema (24 tables vs 8),
+window functions, ROLLUP / GROUPING SETS, semi-joins, and a far harder
+join-order search space. The two together are the de-facto OLAP cover
+set.
 
-For scale=100 (the demo-equivalent 10M/48M graph), prefer the offline
-bulk loader (`neo4j-admin database import full --nodes=Account=accounts.csv
---relationships=transactions.csv`) over LOAD CSV; skip the bench's load
-step by passing `--workloads graph_finance` after pre-loading and
-projecting the graph yourself.
+### SSB (`ssb_read_delta`)
 
-## What v0.1 does not cover
+13 canonical Star Schema Benchmark queries (O'Neil et al., 2009) on
+the 5-table star: lineorder fact + date, part, supplier, customer
+dimensions. The fixture is derived in SQL from the existing TPC-H
+plain-Delta tables (no separate generator), following the canonical
+TPC-H -> SSB mapping cited in the SSB paper, so SSB at SF=N reuses the
+TPC-H SF=N fixture.
 
-Each item below is a planned future release, not a permanent gap. Adding a
-chapter is cheap; adding it badly is expensive, so we ship them one at a
-time once the methodology of the previous chapter has survived independent
-reproduction.
+What SSB adds over TPC-H: the explicit denormalized star, which is
+the BI-shape most warehouses serve, plus an aggregation-heavy query
+mix (4 query flights, all sum / group-by patterns). Smallest of the
+three drop-ins.
 
-| Release | Workload chapter |
-|---|---|
-| v0.2 | TPC-DS (99 queries) at SF=1 and SF=10 |
-| v0.3 | Real-world workloads: MERGE / SCD2, time-travel joins, OPTIMIZE / VACUUM, CDC ingestion |
-| v0.4 | BI / ODBC workloads (Power BI and Tableau-shape queries, DirectQuery refresh times) |
-| v0.5 | Concurrency: multiple simultaneous clients, tail-latency under load |
-| v0.6 | Cloud-instance reference target (in addition to local) |
+### JOB (`job_read_delta`)
+
+113 real queries over a 21-table IMDB snapshot (Leis et al.,
+"How Good Are Query Optimizers, Really?", VLDB 2015). Fixed-size
+fixture (~3.6 GB unpacked, ~1 GB as plain Delta); no scale factor.
+Data and queries both come from the JOB authors' canonical CWI
+snapshot and the upstream MIT-licensed query set; the data-gen script
+downloads `imdb.tgz` on first run, applies the schema via DuckDB,
+exports to parquet, then Spark writes plain Delta.
+
+What JOB adds over TPC-H and TPC-DS: it is **purpose-built to stress
+query-optimizer cardinality estimation**. The 113 queries were chosen
+specifically because they expose the gap between the cardinalities a
+planner estimates and the cardinalities it actually encounters. This
+is where df's planner most directly competes with DuckDB's and Spark's.
+
+## Future chapters
+
+**Scope filter.** Every workload in this benchmark reads from or writes
+to **Delta tables**. Benchmarks that fundamentally cannot run on the
+Delta format (graph databases against a native graph store, KV
+workloads, OLTP against row stores) are out of scope for this suite. The
+point is to measure DeltaForge against other engines reading and writing
+the same Delta files, not against engines doing something different.
+
+The current TPC-H Delta read chapter is the published v0.1 headline.
+The TPC-DS / SSB / JOB drop-ins above are wired up but unpublished
+(any user can generate and run them). The write-half (synthetic CTAS /
+INSERT into Delta, df vs Spark) is the only near-term addition under
+active work.
+
+| When | Workload chapter | Notes |
+| --- | --- | --- |
+| Next | `tpch_write_delta_synthetic`: CTAS from `generate_series` / `range` into plain Delta, then INSERT-from-SELECT. df + Spark; DuckDB's delta extension is read-only and sits this out. | The other half of "Delta engine". Synthetic source so no input-format decoder lands in the headline. |
+| If asked | **Delta-protocol-specific writes**: MERGE / SCD2, time-travel joins (`AS OF VERSION`), OPTIMIZE / Z-ORDER, VACUUM, CDC ingestion (`table_changes`). df vs Spark + Delta Lake. | No analogue on bare Parquet engines; this is where the DeltaForge writer differentiates from Spark + Delta Lake. |
+| If asked | **BI / ODBC over Delta**: Power BI / Tableau / Excel query shapes. df ODBC driver vs Spark Thrift / Databricks SQL endpoint, same plain-Delta TPC-H fixture. | The ODBC driver is a first-class shipping artifact; this is where it gets measured against the same workloads BI tools actually issue. |
+
+**Standards we considered and explicitly do not include:**
+
+- **ClickBench raw fixture**: a single 14 GB compressed Parquet file is
+  not a real-world layout. Its query shapes are interesting, but adopting
+  them would require partitioning the data into a real Delta layout
+  first, at which point we are running a different benchmark.
+- **TPC-C, YCSB**: OLTP / KV workloads, not Delta access patterns.
+  Running them would produce numbers that mislead more than they inform.
+- **Graph benchmarks (LDBC SNB and similar)**: the comparator engines
+  (Neo4j, Memgraph, TigerGraph) don't read Delta. Running them is
+  comparing graph stores, not Delta engines, and belongs in a separate
+  suite if at all.
 
 ## Contributing
 

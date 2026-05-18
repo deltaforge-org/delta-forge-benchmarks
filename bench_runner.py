@@ -54,7 +54,6 @@ ENGINE_REGISTRY = {
     "spark-tuned":   ("engines.spark_tuned_engine",   "SparkTunedEngine"),
     "df":            ("engines.df_engine",            "DeltaForgeEngine"),
     "duckdb":        ("engines.duckdb_engine",        "DuckDBEngine"),
-    "neo4j":         ("engines.neo4j_engine",         "Neo4jEngine"),
 }
 
 
@@ -331,9 +330,8 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     # Verify staged data exists for every workload that will run. Each
     # workload declares its own `data_subdir` (TPC-H workloads default to
-    # `tpch_sf{scale}`, the graph workload uses `graph_finance_sf{scale}`).
-    # Dry-run skips the check so a user can preview manifest.json without
-    # staging data first.
+    # `tpch_sf{scale}`). Dry-run skips the check so a user can preview
+    # manifest.json without staging data first.
     workload_data: dict[str, Path] = {
         wl.name: workload_data_dir(wl, args.scale) for wl in workloads_to_run
     }
@@ -342,6 +340,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         # parquet files are missing. Graph workloads require separate generation
         # (the data is too large to bundle and needs the bench's data_gen script).
         for wl in workloads_to_run:
+            if not wl.requires_input_data:
+                continue
             d = workload_data[wl.name]
             if wl.data_subdir.startswith("tpch_sf") and not (
                 d.exists() and any(d.rglob("*.parquet"))
@@ -351,9 +351,12 @@ def cmd_run(args: argparse.Namespace) -> int:
                 _gen_tpch(args.scale, d)
                 print(f"[data] TPC-H generation complete.")
 
-        # Final check: error on any workload that still has no data.
+        # Final check: error on any read workload that still has no data.
+        # Write workloads (requires_input_data=False) are exempt.
         missing: list[str] = []
         for wl in workloads_to_run:
+            if not wl.requires_input_data:
+                continue
             d = workload_data[wl.name]
             if not (d.exists() and any(d.rglob("*.parquet"))):
                 missing.append(f"{wl.name} -> {d}")
@@ -361,11 +364,6 @@ def cmd_run(args: argparse.Namespace) -> int:
             print("error: missing staged data for:", file=sys.stderr)
             for line in missing:
                 print(f"  {line}", file=sys.stderr)
-            print(
-                "\nFor graph workloads, generate manually:\n"
-                f"  python data_gen/generate_graph_finance.py --scale {args.scale}\n",
-                file=sys.stderr,
-            )
             sys.exit(2)
     # First TPC-H workload's data dir (or the first workload's, if no TPC-H)
     # is used for the host-facts disk-throughput probe. Pick a stable one.
@@ -425,33 +423,12 @@ def cmd_run(args: argparse.Namespace) -> int:
                 "spark-tuned":   ["pyspark", "java.*spark"],
                 "df":            ["delta-forge-cli", "delta-forge-server",
                                   "delta-forge-worker"],
-                # The neo4j JVM runs in a separate compose container; pkill
-                # from the bench container does not see its PIDs. The
-                # _purge module also handles Neo4j via a Bolt-side
-                # `CALL db.clearQueryCaches()` for in-process invalidation
-                # plus a docker-restart fallback when DOCKER_SOCK is
-                # mounted; see engines/_purge.py.
-                "neo4j":         [],
             }
             def cold_purge_fn():
-                # Engine-specific cold-run sequence. The current engine name
-                # is captured by closure below.
-                from engines._purge import (
-                    purge_for_cold_run,
-                    purge_neo4j_caches,
-                )
-                result = purge_for_cold_run(
+                from engines._purge import purge_for_cold_run
+                return purge_for_cold_run(
                     engine_patterns.get(current_engine_name, [])
                 )
-                # Neo4j needs an extra Bolt-side cache clear because its
-                # JVM runs in a separate compose container.
-                if current_engine_name == "neo4j":
-                    ok, msg = purge_neo4j_caches()
-                    # Append the neo4j-specific result into the existing
-                    # PurgeResult message stream so the per-run JSON has
-                    # the full audit trail.
-                    result.processes_killed.append(f"neo4j_caches:ok={ok}:{msg}")
-                return result
         except ImportError:
             pass
 

@@ -40,6 +40,12 @@ spark_write_out/
 build/
 build/df-bins/
 
+# docker/bins/ holds delta-forge-cli/server/worker binaries that the
+# Windows-host docker-compose override bind-mounts into the bench
+# container. Several hundred MB each; reproducible from source via the
+# engine repo's release-ci profile. Do not commit.
+docker/bins/
+
 # ---------------------------------------------------------------------------
 # Downloaded benchmark queries. The workload module itself
 # (workloads/clickbench.py, workloads/tpch_read.py, etc.) is source and

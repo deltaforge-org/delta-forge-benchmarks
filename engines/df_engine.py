@@ -4,8 +4,7 @@ Drives ``delta-forge-cli`` against an already-running control plane +
 compute worker pair. The bench's docker-compose entrypoint
 (``docker/bench-entrypoint.sh``) is responsible for starting Postgres,
 delta-forge-server, and delta-forge-worker; this adapter is a *client*
-to that stack, the same shape as ``Neo4jEngine`` is a client to the
-neo4j compose service.
+to that stack.
 
 This is the only adapter that handles both SQL and Cypher steps,
 because DeltaForge is the only engine in the bench that runs both.
@@ -300,9 +299,36 @@ class DeltaForgeEngine(Engine):
             elif step.kind in (STEP_SQL_QUERY, STEP_CYPHER_QUERY):
                 if not step.sql:
                     raise ValueError(f"{step.kind} step requires query text")
-                # A measured query step is a single statement by contract;
-                # the workload should not glue multiple SELECTs together.
-                proc = self._run_cli_query(step.sql, timeout=3600.0)
+                # Wrap the measured SELECT with `SHOW STATS ACTUAL` and report
+                # SHOW STATS' `total_time_ms` (wall around the inner query
+                # handler, plan + compile + execute + drain). The plain
+                # streaming endpoint's `execution_time_ms` on this build
+                # only covers planning/setup -- actual scan happens later
+                # when partition tickets are drained -- which made our prior
+                # df numbers measure planning, not execution.
+                #
+                # If the workload sent a multi-statement script (separated
+                # by `;`), treat all statements EXCEPT the last as preamble
+                # (e.g. `OPEN DELTA TABLE '...' AS lineitem`) and wrap only
+                # the last with SHOW STATS. The preamble runs in the same
+                # session as the SHOW STATS handler, so any OPENs are
+                # visible when the inner query plans. Preamble time lands
+                # in `wall_ms` but NOT in `engine_reported_ms`, matching
+                # the DuckDB/Spark convention where setup is unmeasured.
+                stmts = _split_sql_statements(step.sql)
+                if not stmts:
+                    raise ValueError(f"{step.kind} step has no SQL")
+                preamble = stmts[:-1]
+                select_stmt = stmts[-1]
+                if preamble:
+                    stats_sql = (
+                        ";\n".join(preamble)
+                        + ";\n"
+                        + f"SHOW STATS ACTUAL {select_stmt}"
+                    )
+                else:
+                    stats_sql = f"SHOW STATS ACTUAL {select_stmt}"
+                proc = self._run_cli_query(stats_sql, timeout=3600.0)
                 if proc.returncode != 0:
                     raise RuntimeError(
                         f"delta-forge-cli failed (exit {proc.returncode}): "
@@ -311,22 +337,39 @@ class DeltaForgeEngine(Engine):
                 parsed = _try_parse_cli_json(proc.stdout)
                 if parsed is None:
                     raise RuntimeError(
-                        f"CLI did not return JSON for {step.kind}; "
+                        f"CLI did not return JSON for SHOW STATS; "
                         f"stdout head: {proc.stdout[:300]!r}"
                     )
-                if "execution_time_ms" in parsed:
-                    engine_reported_ms = float(parsed["execution_time_ms"])
-                rows = parsed.get("rows") or []
-                cols = parsed.get("columns") or []
-                rows_returned = int(parsed.get("row_count", len(rows)))
-                if step.expects_rows:
-                    from workloads.spec import hash_result_rows
-                    # The CLI emits each row as {col: value_or_null}. Render
-                    # in declared column order so the hash is deterministic.
-                    tuple_rows = [
-                        tuple(r.get(c) for c in cols) for r in rows
-                    ]
-                    result_sha, _ = hash_result_rows(tuple_rows)
+                # Walk the per-row stats records and pull total_time_ms and
+                # the row count the underlying query produced. SHOW STATS
+                # returns a "long" table of (category, metric, value, unit)
+                # rows; we filter for the time/total_time_ms cell.
+                engine_reported_ms = None
+                inner_row_count = None
+                for r in parsed.get("rows") or []:
+                    if r.get("category") == "time" and r.get("metric") == "total_time_ms":
+                        v = r.get("value")
+                        if v not in (None, "None"):
+                            try:
+                                engine_reported_ms = float(v)
+                            except (TypeError, ValueError):
+                                pass
+                    elif r.get("category") == "rows" and r.get("metric") == "rows_returned":
+                        v = r.get("value")
+                        if v not in (None, "None"):
+                            try:
+                                inner_row_count = int(float(v))
+                            except (TypeError, ValueError):
+                                pass
+                rows_returned = inner_row_count if inner_row_count is not None else 0
+                # SHOW STATS does not emit the underlying query's result rows
+                # (it emits its own stats table instead). Result-set hashing
+                # for cross-engine agreement therefore has to come from a
+                # separate plain run. Skip the hash on df for now; the bench
+                # framework still records row count, which catches the
+                # gross-mismatch case.
+                result_sha = None
+                _ = step.expects_rows
 
             else:
                 raise ValueError(f"unknown step kind: {step.kind}")
