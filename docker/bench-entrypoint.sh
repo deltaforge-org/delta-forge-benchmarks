@@ -78,14 +78,20 @@ rm -f "${DELTA_FORGE_CONFIG_DIR}/bootstrap.lock" \
       "${HOME}/.deltaforge/bootstrap.lock" \
       "/root/.deltaforge/bootstrap.lock"
 
-# License key: passed through to the bootstrap orchestrator which installs it
-# into the license manager and activates online. Optional — without a key the
-# instance runs in PendingActivation mode (limited to local/offline evaluation).
+# License key: REQUIRED. Passed through to the bootstrap orchestrator
+# which installs it into the license manager and activates online against
+# the console on first start. DeltaForge cannot bootstrap without a key:
+# the headless bootstrap fails and the server never reaches a healthy
+# state. The key is free (no credit card) at console.deltaforge.org.
 if [ -n "${DELTA_FORGE_LICENSE_KEY:-}" ]; then
     export DELTA_FORGE_LICENSE_KEY
-    echo "[entrypoint] license key present — will activate during bootstrap"
+    echo "[entrypoint] license key present, will activate during bootstrap"
 else
-    echo "[entrypoint] DELTA_FORGE_LICENSE_KEY not set — running in evaluation mode"
+    echo "[entrypoint] ERROR: DELTA_FORGE_LICENSE_KEY is not set."
+    echo "[entrypoint] DeltaForge cannot bootstrap without a license key."
+    echo "[entrypoint] Get a free key (no credit card) at https://console.deltaforge.org"
+    echo "[entrypoint] and set it in docker/.env before bringing the stack up."
+    exit 1
 fi
 
 mkdir -p "${DELTA_FORGE_CONFIG_DIR}"

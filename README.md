@@ -25,10 +25,15 @@ tables on each per-benchmark page linked below.
 | [TPC-H](published/tpch.md) | **255** | **173** | 1,478 | 1,528 | 22 queries |
 | [TPC-DS](published/tpcds.md) | **271** | **171** | 1,568 (8 fail) | 1,464 | 99 queries |
 | [SSB](published/ssb.md) | **191** | **75** | 685 | 628 | 13 queries |
-| [JOB](published/job.md) | (running) | (running) | (running) | (running) | 113 queries |
+| [JOB](published/job.md) | **976** | **632** | crashed | crashed | 113 queries |
 
 DuckDB wins every read at SF=1 (1.5x-2.5x faster than df). df beats both
-Spark profiles by 5x-8x on every read.
+Spark profiles by 5x-8x on every read. **JOB exposed a Spark stability
+limit**: Spark default's JVM crashed after q06d (21 of 113 queries
+completed) and Spark tuned failed to start on the JOB engine. We do
+not publish a median for the partial Spark runs because the 21
+successful queries are an unrepresentative early subset, not a
+random sample. df and DuckDB completed all 113.
 
 ### Write throughput (10M rows, plain Delta CTAS, synthetic source)
 
@@ -55,8 +60,11 @@ cp docker/.env.example docker/.env
 $EDITOR docker/.env       # set DELTA_FORGE_LICENSE_KEY=DF1.<your-key>
 ```
 
-Without a license the bench runs in evaluation mode with reduced
-capacity (sufficient for SF=1 only).
+**The license key is required.** DeltaForge cannot bootstrap without
+one — the headless bootstrap fails and the bench container exits.
+Sign-up at the console is free, no credit card, takes under a minute,
+and the key activates online against the console on first container
+start.
 
 **2.** Bring up the stack and generate the fixtures (one-time per scale).
 The compose file lives under `docker/`, so run compose commands from

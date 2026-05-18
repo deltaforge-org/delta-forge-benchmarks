@@ -5,12 +5,14 @@ This is the long-form companion to the headlines on the
 [main README](../README.md) and the per-benchmark pages in
 [`published/`](../published/index.md).
 
-## Before you start: get a license key
+## Before you start: get a license key (required)
 
-DeltaForge needs a license key to run at full benchmark capacity.
-The key is **free, no credit card** — sign up at
-[console.deltaforge.org](https://console.deltaforge.org) and copy the
-key string into `docker/.env`:
+**The license key is required to run this bench.** DeltaForge cannot
+bootstrap without one — the headless bootstrap fails and the bench
+container exits without producing results. The key is **free, no
+credit card** — sign up at
+[console.deltaforge.org](https://console.deltaforge.org) (takes under
+a minute) and copy the key string into `docker/.env`:
 
 ```bash
 cp docker/.env.example docker/.env
@@ -18,12 +20,10 @@ $EDITOR docker/.env
 # set DELTA_FORGE_LICENSE_KEY=DF1.<your-key-from-console>
 ```
 
-Without a license the server activates in evaluation mode at first
-boot. That mode is enough to smoke-test the harness at SF=1 but caps
-nodes / cores / DFCU usage and will throttle larger scales. The
-bench-entrypoint script reads `DELTA_FORGE_LICENSE_KEY` from the
+The bench-entrypoint script reads `DELTA_FORGE_LICENSE_KEY` from the
 container environment, passes it to the headless bootstrap, and the
-server activates online against the console at first start.
+server activates online against the console on first container start.
+After that the activation is cached and the bench can run offline.
 
 ## Quickstart (Docker)
 
