@@ -1,8 +1,13 @@
 # DeltaForge benchmark results
 
-Published numbers from `delta-forge-benchmarks/`. Four standardized
+Published numbers from [`delta-forge-benchmarks/`](../README.md). Four standardized
 read benchmarks against the same plain-Delta fixtures, four engines on
-the same single-node host.
+the same single-node host, plus a synthetic-source Delta write workload.
+
+Related docs in the bench repo: [setup](../docs/setup.md) ·
+[design invariants](../docs/design.md) ·
+[docker image](../docs/image.md) ·
+[methodology](methodology.md).
 
 ## Benchmarks in this set
 
