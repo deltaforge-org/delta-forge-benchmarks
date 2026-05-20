@@ -209,5 +209,5 @@ every published table, by name, with the slowdown factor.
 | [`bench_runner.py`](../bench_runner.py) | Harness entry point |
 
 If you spot a methodological issue, the channel is
-[GitHub issues](https://github.com/) on this repo. PRs that improve the
+[GitHub issues]([https://github.com/](https://github.com/deltaforge-org/delta-forge-benchmarks/issues)) on this repo. PRs that improve the
 methodology are welcomed.
