@@ -1,0 +1,117 @@
+# delta-forge-benchmarks compose stack
+#
+# Two services:
+#
+#   1. bench         (unprivileged) - runs the harness, both engine processes
+#                    (sequentially, never concurrently), and emits results.
+#                    Resource-capped via deploy.resources so each engine sees
+#                    an identical sandbox.
+#
+#   2. dropcaches    (privileged, ~10 lines of code) - listens on a Unix socket
+#                    and writes /proc/sys/vm/drop_caches when triggered. The
+#                    main bench container is unprivileged; only this sidecar
+#                    has CAP_SYS_ADMIN. Reviewers can audit its source in
+#                    docker/Dockerfile.dropcaches in seconds.
+#
+# Bring up: `docker compose up -d`
+# Run a bench: `docker compose exec bench python bench_runner.py --scale ${BENCH_SCALE_FACTOR}`
+
+services:
+  dropcaches:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dropcaches
+    image: delta-forge-bench-dropcaches:local
+    container_name: bench-dropcaches
+    privileged: true
+    restart: unless-stopped
+    volumes:
+      # Sidecar exposes the trigger socket on the host so bench can hit it.
+      - ${DROPCACHES_SOCKET:-/var/run/bench-dropcaches.sock}:/run/dropcaches.sock
+      # Sidecar needs /proc to write drop_caches.
+      - /proc:/host/proc
+
+  bench:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        BUILD_MODE: ${BUILD_MODE:-local}
+        DF_GIT_SHA: ${DF_GIT_SHA:-unset}
+        DF_VERSION: ${DF_VERSION:-}
+        PYSPARK_VERSION: ${PYSPARK_VERSION:-4.0.0}
+        DELTA_SPARK_VERSION: ${DELTA_SPARK_VERSION:-4.0.0}
+        JDK_VERSION: ${JDK_VERSION:-17}
+    image: delta-forge-bench:local
+    container_name: bench
+    depends_on:
+      - dropcaches
+    # Resource limits enforced. These apply to whichever engine is currently
+    # active inside the container. See README "Fairness contract".
+    deploy:
+      resources:
+        limits:
+          cpus: "${BENCH_CPUS:-8}"
+          memory: ${BENCH_MEMORY:-16g}
+    cpu_count: ${BENCH_CPUS:-8}
+    cpus: ${BENCH_CPUS:-8}
+    mem_limit: ${BENCH_MEMORY:-16g}
+    environment:
+      BENCH_SCALE_FACTOR: ${BENCH_SCALE_FACTOR:-1}
+      BENCH_CPUS: ${BENCH_CPUS:-8}
+      BENCH_MEMORY: ${BENCH_MEMORY:-16g}
+      DF_GIT_SHA: ${DF_GIT_SHA:-unset}
+      PYSPARK_VERSION: ${PYSPARK_VERSION:-4.0.0}
+      DELTA_SPARK_VERSION: ${DELTA_SPARK_VERSION:-4.0.0}
+      JDK_VERSION: ${JDK_VERSION:-17}
+      DROPCACHES_TRIGGER: /run/dropcaches.sock
+      # Headless DF bootstrap contract (delta-forge-bootstrap/src/inputs.rs).
+      # License key activates the DF instance at first boot. Pass via .env or -e.
+      DELTA_FORGE_LICENSE_KEY: ${DELTA_FORGE_LICENSE_KEY:-}
+      DELTA_FORGE_ADMIN_PASSWORD: ${DELTA_FORGE_ADMIN_PASSWORD:-bench_admin_local}
+      DELTA_FORGE_ENGINEER_PASSWORD: ${DELTA_FORGE_ENGINEER_PASSWORD:-bench_engineer_local}
+      DELTA_FORGE_ADMIN_EMAIL: ${DELTA_FORGE_ADMIN_EMAIL:-admin@deltaforge.local}
+      DELTA_FORGE_BIND_ADDR: ${DELTA_FORGE_BIND_ADDR:-127.0.0.1:3000}
+      DELTA_FORGE_CONFIG_DIR: /var/lib/deltaforge
+      # Postgres lifecycle is owned by the entrypoint; these knobs let a
+      # reviewer re-point at an external DB without rebuilding the image.
+      PGPORT: "5432"
+      PGUSER: deltaforge
+      PGDATABASE: deltaforge
+      PGPASSWORD: ${PGPASSWORD:-deltaforge_local}
+      # Compute node -> control plane wiring (delta-forge-compute/src/bin/compute.rs).
+      CONTROL_PLANE_URL: http://127.0.0.1:3000
+      BIND_HOST: 127.0.0.1
+      BIND_PORT: "3031"
+      NODE_SECRET: ${NODE_SECRET:-bench_node_local}
+      NODE_ID: ${NODE_ID:-bench-local}
+      DISPLAY_NAME: ${DISPLAY_NAME:-Bench Local}
+    volumes:
+      - ../:/workspace:rw
+      - bench_data:/workspace/data
+      - bench_pgdata:/var/lib/postgresql/data
+      - bench_dfconfig:/var/lib/deltaforge
+      - bench_logs:/var/log/deltaforge
+      - ${DROPCACHES_SOCKET:-/var/run/bench-dropcaches.sock}:/run/dropcaches.sock
+    working_dir: /workspace
+    # Entrypoint brings up postgres -> server -> compute, then exec's CMD.
+    # `sleep infinity` keeps the container around for `docker compose exec`
+    # interactive runs of bench_runner.py.
+    command: ["sleep", "infinity"]
+
+volumes:
+  bench_data:
+    driver: local
+  # Postgres data dir. Bind-mount this if you want to inspect catalog state
+  # across `docker compose down/up`; leave anonymous to get a fresh DB per run.
+  bench_pgdata:
+    driver: local
+  # config.toml + signing keys. Persisted across restarts so bootstrap only
+  # runs once per stack lifetime; remove the volume to force a fresh
+  # bootstrap (e.g. `docker compose down -v`).
+  bench_dfconfig:
+    driver: local
+  # Engine logs (control plane, worker, postgres). Bench harness copies
+  # these into per-run results/ directories.
+  bench_logs:
+    driver: local

@@ -1,0 +1,17 @@
+-- TPC-H schema (8 tables) in Delta format.
+--
+-- Phase 1 placeholder. The canonical TPC-H column definitions go here in
+-- Phase 2; we keep the file in the tree now so the directory layout is
+-- complete and bench_runner.py can locate the workload root.
+--
+-- Both Delta Forge and Spark accept this file; engine-specific extensions
+-- (Z-ORDER on Delta Forge, OPTIMIZE on Spark) live in load.sql so the
+-- shared DDL stays portable.
+
+-- TODO(phase2): CREATE TABLE lineitem (
+--     l_orderkey      BIGINT      NOT NULL,
+--     l_partkey       BIGINT      NOT NULL,
+--     ...
+-- ) USING DELTA;
+--
+-- ... and the other 7 tables.

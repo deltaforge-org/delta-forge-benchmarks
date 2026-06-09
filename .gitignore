@@ -1,0 +1,104 @@
+# ---------------------------------------------------------------------------
+# Generated input data
+# ---------------------------------------------------------------------------
+
+# TPC-H parquet (regenerate from dbgen, never commit raw .tbl/.parquet)
+data/
+
+# ---------------------------------------------------------------------------
+# Per-run output artefacts
+# ---------------------------------------------------------------------------
+#
+# Each bench run produces a timestamped dir under results/ that holds the
+# raw JSONL records, manifest.json, engine logs, and charts. The dir name
+# is non-deterministic (timestamp + tag suffix) so we ignore the whole
+# tree by default. If you want to publish a baseline, add the specific
+# file with `git add -f results/<tag>/summary.csv` -- the explicit add
+# overrides the ignore.
+
+results/
+
+# Older finer-grained patterns kept for clarity in case someone restores
+# a top-level summary.csv convention.
+results/*/raw/
+results/*/logs/
+results/*/charts/
+
+# ---------------------------------------------------------------------------
+# Write-bench output directories (per-engine target storage produced by
+# the csv_to_delta workload). Recreated on every run.
+# ---------------------------------------------------------------------------
+bench_delta_w/
+duckdb_write_out/
+spark_write_out/
+
+# ---------------------------------------------------------------------------
+# Staged engine binaries (set up by scripts/stage-local-bins.sh; build
+# inputs for docker-build.ps1). The image is reproduced from source, not
+# from these files, so they don't belong in git.
+# ---------------------------------------------------------------------------
+build/
+build/df-bins/
+
+# docker/bins/ holds delta-forge-cli/server/worker binaries that the
+# Windows-host docker-compose override bind-mounts into the bench
+# container. Several hundred MB each; reproducible from source via the
+# engine repo's release-ci profile. Do not commit.
+docker/bins/
+
+# ---------------------------------------------------------------------------
+# Downloaded benchmark queries. The workload module itself
+# (workloads/clickbench.py, workloads/tpch_read.py, etc.) is source and
+# stays tracked; the .sql files under workloads/clickbench/queries/ are
+# fetched on demand by scripts/setup_clickbench.sh.
+# ---------------------------------------------------------------------------
+workloads/clickbench/queries/
+
+# ---------------------------------------------------------------------------
+# Audit + diagnostic outputs (BufferPool audit, write-breakdown diag, etc.)
+# ---------------------------------------------------------------------------
+*.log
+target/
+audit_*.txt
+*_diag.txt
+
+# ---------------------------------------------------------------------------
+# Windows quirks
+# ---------------------------------------------------------------------------
+# Bash-on-Windows tools sometimes create a file literally named `nul`
+# when a script redirects to /dev/null using Windows path semantics.
+nul
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# ---------------------------------------------------------------------------
+# Local docker overrides
+# ---------------------------------------------------------------------------
+# docker-compose.override.yml is intentionally NOT in this list: the
+# Windows-host overrides (read-only neo4j mount, no-op dropcaches,
+# patched entrypoint mount) are committed so other Windows contributors
+# get them automatically. The .env file IS ignored because it carries
+# the license key.
+docker/.env
+docker/.env.local
+docker/build/
+
+# ---------------------------------------------------------------------------
+# Editors / OS
+# ---------------------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

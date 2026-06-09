@@ -1,0 +1,11 @@
+# cmake build dir
+build/
+
+# per-run logs and JSON output (these are reproducible from the bench
+# inputs; do not commit them. Re-create with ./scripts/run.sh).
+results/
+
+# staged driver artefacts produced by scripts/stage-driver-bins.sh
+# (these are intentionally absent from the source tree; the staging
+# script populates them from a built DeltaForge tree at the parent
+# build/df-drivers/ path -- not from inside driver-bench/).

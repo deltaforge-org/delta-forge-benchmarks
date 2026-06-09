@@ -1,0 +1,92 @@
+# driver-bench docker-compose stack.
+#
+# Brings up a self-provisioned DeltaForge instance (postgres + control
+# plane + worker, the canonical bench shape inherited from
+# ../../docker/bench-entrypoint.sh) plus the BI-driver bench client,
+# all inside one container. The bench connects to the in-container
+# 127.0.0.1:3000 control plane and 127.0.0.1:3031 worker, exactly the
+# way an end user's BI tool would connect to a DeltaForge install on
+# the same host.
+#
+# One service. No dropcaches sidecar: the driver bench measures
+# driver-side wall time, not OS-page-cache-cold scan time, so the
+# warm vs cold distinction the existing TPC-H bench cares about does
+# not apply here.
+#
+# Up:   docker compose up --build
+# Logs: docker compose logs -f
+# Shell: docker compose run --rm driver-bench bash
+
+services:
+  driver-bench:
+    build:
+      # Build context is the benchmarks repo root so the Dockerfile can
+      # COPY build/df-drivers/* into the image. driver-bench/docker/
+      # references files in the repo root by relative path.
+      context: ../..
+      dockerfile: driver-bench/docker/Dockerfile
+      args:
+        PARENT_IMAGE: ${PARENT_IMAGE:-delta-forge-bench:local}
+    image: delta-forge-driver-bench:local
+    container_name: driver-bench
+    # Resource limits identical to the parent bench so the comparison
+    # is on the same fairness footing as the other published numbers.
+    deploy:
+      resources:
+        limits:
+          cpus: "${BENCH_CPUS:-8}"
+          memory: ${BENCH_MEMORY:-16g}
+    cpu_count: ${BENCH_CPUS:-8}
+    cpus: ${BENCH_CPUS:-8}
+    mem_limit: ${BENCH_MEMORY:-16g}
+    environment:
+      # Headless bootstrap contract (delta-forge-bootstrap/src/inputs.rs).
+      # The license key activates the DF instance at first boot. Get a
+      # free key (no credit card) at https://console.deltaforge.org and
+      # pass it via .env or `-e DELTA_FORGE_LICENSE_KEY=...`.
+      DELTA_FORGE_LICENSE_KEY: ${DELTA_FORGE_LICENSE_KEY:-}
+      DELTA_FORGE_ADMIN_EMAIL: ${DELTA_FORGE_ADMIN_EMAIL:-admin@deltaforge.local}
+      DELTA_FORGE_ADMIN_PASSWORD: ${DELTA_FORGE_ADMIN_PASSWORD:-bench_admin_local}
+      DELTA_FORGE_ENGINEER_PASSWORD: ${DELTA_FORGE_ENGINEER_PASSWORD:-bench_engineer_local}
+      DELTA_FORGE_BIND_ADDR: ${DELTA_FORGE_BIND_ADDR:-127.0.0.1:3000}
+      DELTA_FORGE_CONFIG_DIR: /var/lib/deltaforge
+      # Postgres knobs identical to the parent compose.
+      PGPORT: "5432"
+      PGUSER: deltaforge
+      PGDATABASE: deltaforge
+      PGPASSWORD: ${PGPASSWORD:-deltaforge_local}
+      # Worker → control plane wiring.
+      CONTROL_PLANE_URL: http://127.0.0.1:3000
+      BIND_HOST: 127.0.0.1
+      BIND_PORT: "3031"
+      NODE_SECRET: ${NODE_SECRET:-bench_node_local}
+      NODE_ID: ${NODE_ID:-driver-bench}
+      DISPLAY_NAME: ${DISPLAY_NAME:-Driver Bench Local}
+      # Driver-bench tuning knobs (read by run-in-container.sh).
+      DRIVER_BENCH_ROWS: ${DRIVER_BENCH_ROWS:-10000000}
+      DRIVER_BENCH_WARMUPS: ${DRIVER_BENCH_WARMUPS:-1}
+      DRIVER_BENCH_ITERS: ${DRIVER_BENCH_ITERS:-5}
+      DRIVER_BENCH_DRIVER: ${DRIVER_BENCH_DRIVER:-both}
+    volumes:
+      # Workspace mount gives the container the bench source tree and
+      # a place to write results. `..` resolves to the benchmarks repo
+      # root from this compose file (docker/) which is one level up.
+      - ../../:/workspace:rw
+      - driver_bench_pgdata:/var/lib/postgresql/data
+      - driver_bench_dfconfig:/var/lib/deltaforge
+      - driver_bench_logs:/var/log/deltaforge
+    working_dir: /workspace/driver-bench
+    # ENTRYPOINT is inherited from the parent image (bench-entrypoint.sh),
+    # which brings up postgres + control plane + worker, then exec's CMD.
+    # We override CMD here so it runs our bench instead of `sleep infinity`.
+    command: ["/workspace/driver-bench/scripts/run-in-container.sh"]
+
+volumes:
+  # Isolated postgres data volume so this stack does not collide with
+  # any pre-existing parent-bench Postgres state on the same host.
+  driver_bench_pgdata:
+    driver: local
+  driver_bench_dfconfig:
+    driver: local
+  driver_bench_logs:
+    driver: local
