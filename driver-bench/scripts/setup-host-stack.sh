@@ -1,265 +1,149 @@
 #!/usr/bin/env bash
-# driver-bench: provision a self-contained DeltaForge stack on the host.
+# driver-bench: point the bench at a DeltaForge platform and configure ODBC.
 #
-# Brings up Postgres (the embedded one that ships with DeltaForge), then
-# delta-forge-server in two passes (headless bootstrap + serve), then
-# delta-forge-compute (worker) against the control plane, activates the
-# license, creates a zone for the bench fixture, and configures unixODBC.
+# The new model uses the released DeltaForge **platform** (which embeds the
+# control plane, the compute node, and the database in one process) instead of
+# provisioning a standalone postgres + server + worker stack. This script:
 #
-# Mirrors docker/bench-entrypoint.sh in the parent benchmarks repo --
-# same env-var contract (DELTA_FORGE_DB_URL, DELTA_FORGE_ADMIN_PASSWORD,
-# DELTA_FORGE_LICENSE_KEY, etc.), same two-pass dance to work around the
-# recursive instance-lock the server's cmd_run does after bootstrap.
+#   1. finds a reachable control plane (default http://127.0.0.1:3000); if none
+#      is up and the parent installer staged a platform under ../.engine, it
+#      launches that platform headless and waits for it to become healthy,
+#   2. authenticates as the admin user,
+#   3. ensures the bench zone exists,
+#   4. writes the unixODBC driver + DSN entries, and
+#   5. writes $DF_HOME/stack.env for run_smoke.sh / run_bench.sh / build-fixture.sh.
 #
-# Idempotent: subsequent invocations skip steps that have already run.
-# Exit codes:
-#   0   stack healthy, ready for ./scripts/build-fixture.sh and run_bench.sh
-#   10  postgres failed to come up
-#   11  control plane failed /api/v1/health within 90s
-#   12  worker failed /health within 60s
-#   13  license activation failed
-#   14  zone creation failed
+# Prereqs:
+#   - ./scripts/install.sh            (unixODBC, cmake, .NET, jq)
+#   - ./scripts/stage-driver-bins.sh  (downloads the released ODBC + ADBC .so)
+#   - a DeltaForge platform: either already running (your desktop app, or the
+#     parent repo's `./bench`), or installed by the parent `./install.sh` so
+#     this script can launch it.
+#
+# Idempotent. Exit codes: 11 control plane unreachable, 13 auth failed, 14 zone.
 
-set -euo pipefail
+set -eu
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BENCH_REPO="$(cd "$REPO_ROOT/.." && pwd)"
 cd "$REPO_ROOT"
 
-# ----- env contract ----------------------------------------------------------
+log()  { printf '\033[1;36m[stack-up] %s\033[0m\n' "$*"; }
+warn() { printf '\033[1;33m[stack-up] WARN %s\033[0m\n' "$*" >&2; }
+fail() { printf '\033[1;31m[stack-up] ERROR %s\033[0m\n' "$*" >&2; exit "${2:-1}"; }
 
-# Source .env from the driver-bench AND the parent benchmarks repo. The
-# parent's stage-local-bins.sh writes DF_VERSION there; install.sh here
-# writes DOTNET_ROOT / ODBC_INC / ODBC_LIB.
+# Parent installer's .env carries DF_CONTROL_URL / DF_CLI_PATH / DF_PLATFORM_BIN
+# / DF_USERNAME / DF_PASSWORD / DF_VERSION; driver-bench's own .env carries the
+# host-tool paths. Source both (parent first so local can override).
 [ -f "$BENCH_REPO/.env" ] && set -a && . "$BENCH_REPO/.env" && set +a
-[ -f "$REPO_ROOT/.env"   ] && set -a && . "$REPO_ROOT/.env"   && set +a
+[ -f "$REPO_ROOT/.env"  ] && set -a && . "$REPO_ROOT/.env"  && set +a
 
 DF_HOME="${DF_HOME:-/tmp/df-bench-stack}"
-PG_DATA="${PG_DATA:-${DF_HOME}/pg-data}"
-PG_SOCK="${PG_SOCK:-${DF_HOME}/pg-sock}"
-PG_PORT="${PG_PORT:-55432}"
-PG_PASSWORD="${PG_PASSWORD:-deltaforge_bench}"
+mkdir -p "$DF_HOME"/logs "$DF_HOME"/data
 
-CTRL_PORT="${CTRL_PORT:-13000}"
-COMPUTE_PORT="${COMPUTE_PORT:-13031}"
-CTRL_URL="http://127.0.0.1:${CTRL_PORT}"
-COMPUTE_URL="http://127.0.0.1:${COMPUTE_PORT}"
+CTRL_URL="${DF_CTRL_URL:-${DF_CONTROL_URL:-http://127.0.0.1:3000}}"
+# Compute API sits on the platform's compute port (3031 by default). Derive it
+# from the control URL host, overridable via DF_COMPUTE_URL.
+COMPUTE_URL="${DF_COMPUTE_URL:-$(printf '%s' "$CTRL_URL" | sed -E 's#:[0-9]+$#:3031#')}"
 
-ADMIN_EMAIL="${DELTA_FORGE_ADMIN_EMAIL:-admin@deltaforge.local}"
-# Defaults must satisfy the engine's password policy: at least one digit,
-# at least one uppercase letter, length >= 12. Operators wanting a
-# different password set DELTA_FORGE_ADMIN_PASSWORD in their environment.
-ADMIN_PWD="${DELTA_FORGE_ADMIN_PASSWORD:-Bench_admin_2026}"
-ENGINEER_PWD="${DELTA_FORGE_ENGINEER_PASSWORD:-Bench_engineer_2026}"
-
-NODE_SECRET="${NODE_SECRET:-bench_node_local}"
-NODE_ID="${NODE_ID:-driver-bench-local}"
-
+ADMIN_EMAIL="${DF_USERNAME:-${DELTA_FORGE_ADMIN_EMAIL:-admin@deltaforge.local}}"
+ADMIN_PWD="${DF_PASSWORD:-${DELTA_FORGE_ADMIN_PASSWORD:-Benchmark_Admin1}}"
 ZONE_NAME="${DRIVER_BENCH_ZONE:-bench}"
+DSN_NAME="${DRIVER_BENCH_DSN:-deltaforge_bench}"
+DRIVER_NAME="DeltaForgeBench"
 
-# Helper accessors --------------------------------------------------------------
+CLI_BIN="${DF_CLI_PATH:-$BENCH_REPO/.engine/bin/deltaforge-cli}"
 
-log()  { printf "\033[1;36m[stack-up] %s\033[0m\n" "$*"; }
-warn() { printf "\033[1;33m[stack-up] WARN %s\033[0m\n" "$*" >&2; }
-fail() { printf "\033[1;31m[stack-up] ERROR %s\033[0m\n" "$*" >&2; exit "${2:-1}"; }
+# ----- 0. drivers (subjects under test) --------------------------------------
 
-# ----- 0. preflight ----------------------------------------------------------
-
-if [ -z "${DELTA_FORGE_LICENSE_KEY:-}" ]; then
-    fail "DELTA_FORGE_LICENSE_KEY not set. Free key at https://console.deltaforge.org -- export it before re-running."
-fi
-
-# Engine binaries: prefer the parent benchmarks repo's build/df-bins/
-# (populated by stage-local-bins.sh or by a release download), fall back
-# to whatever the operator pointed DF_BINS_DIR at.
-DF_BINS_DIR="${DF_BINS_DIR:-$BENCH_REPO/build/df-bins}"
-for bin in deltaforge-server deltaforge-compute deltaforge-cli; do
-    if [ ! -x "$DF_BINS_DIR/$bin" ]; then
-        # Some release tarballs unpack with the "delta-forge-*" naming; try both.
-        if [ -x "$DF_BINS_DIR/delta-forge-${bin#deltaforge-}" ]; then
-            ln -sf "$DF_BINS_DIR/delta-forge-${bin#deltaforge-}" "$DF_BINS_DIR/$bin"
-        fi
-    fi
-    if [ ! -x "$DF_BINS_DIR/$bin" ]; then
-        fail "$bin not found under $DF_BINS_DIR. Run ../scripts/stage-local-bins.sh first, or set DF_BINS_DIR to point at a release-extracted dir."
-    fi
-done
-SERVER_BIN="$DF_BINS_DIR/deltaforge-server"
-COMPUTE_BIN="$DF_BINS_DIR/deltaforge-compute"
-CLI_BIN="$DF_BINS_DIR/deltaforge-cli"
-log "engine binaries: $DF_BINS_DIR"
-
-# Driver .so files (the subjects under test).
 DF_DRIVERS_DIR="${DF_DRIVERS_DIR:-$BENCH_REPO/build/df-drivers}"
-ODBC_DRIVER_SO="${DF_DRIVERS_DIR}/libdeltaforgeodbc.so"
-ADBC_DRIVER_SO="${DF_DRIVERS_DIR}/libdeltaforge_adbc.so"
+ODBC_DRIVER_SO="$DF_DRIVERS_DIR/libdeltaforgeodbc.so"
+ADBC_DRIVER_SO="$DF_DRIVERS_DIR/libdeltaforge_adbc.so"
 if [ ! -f "$ODBC_DRIVER_SO" ] || [ ! -f "$ADBC_DRIVER_SO" ]; then
-    fail "ODBC/ADBC driver .so files missing under $DF_DRIVERS_DIR. Run ./scripts/stage-driver-bins.sh."
+    fail "ODBC/ADBC driver .so files missing under $DF_DRIVERS_DIR. Run ./scripts/stage-driver-bins.sh first."
 fi
 log "drivers: $DF_DRIVERS_DIR"
 
-# Embedded postgres bundled with DeltaForge desktop installs.
-PG_BIN="${PG_BIN:-/home/$(id -un)/.deltaforge/pg-install/18.3.0/bin}"
-if [ ! -x "$PG_BIN/pg_ctl" ]; then
-    # Fall back to system postgres if available.
-    if command -v pg_ctl >/dev/null 2>&1; then
-        PG_BIN="$(dirname "$(command -v pg_ctl)")"
-    else
-        fail "no embedded postgres at $PG_BIN and no system postgres on PATH"
-    fi
-fi
-log "postgres: $PG_BIN ($("$PG_BIN/postgres" --version | head -1))"
+# ----- 1. reach (or launch) the DeltaForge platform --------------------------
 
-mkdir -p "$DF_HOME"/{config,logs,data} "$PG_SOCK"
+PLATFORM_PID=""
+is_healthy() { curl -fsS "$CTRL_URL/api/v1/health" 2>/dev/null | grep -q healthy; }
 
-# ----- 1. postgres -----------------------------------------------------------
-
-# Bring up an isolated postgres on $PG_PORT. Skip if already running with
-# a server we control (PID file present + responsive).
-if [ -f "$PG_DATA/postmaster.pid" ] \
-   && "$PG_BIN/pg_isready" -h "$PG_SOCK" -p "$PG_PORT" >/dev/null 2>&1; then
-    log "postgres already up on :${PG_PORT}"
+if is_healthy; then
+    log "using the DeltaForge platform already serving at $CTRL_URL"
 else
-    if [ ! -s "$PG_DATA/PG_VERSION" ]; then
-        log "initdb $PG_DATA"
-        "$PG_BIN/initdb" -D "$PG_DATA" --auth=trust --username=postgres \
-            --encoding=UTF8 --locale=C >/dev/null
+    PLATFORM_BIN="${DF_PLATFORM_BIN:-$BENCH_REPO/.engine/squashfs-root/AppRun}"
+    if [ ! -e "$PLATFORM_BIN" ]; then
+        fail "no DeltaForge control plane at $CTRL_URL and no installed platform to launch.
+  Start DeltaForge first (run the parent repo's ./bench, or open the desktop app),
+  or set DF_CTRL_URL to a running instance, then re-run this script." 11
     fi
-    log "starting postgres on :${PG_PORT}"
-    "$PG_BIN/pg_ctl" -D "$PG_DATA" -l "$DF_HOME/logs/postgres.log" \
-        -o "-c port=${PG_PORT} -c listen_addresses=127.0.0.1 -c unix_socket_directories=${PG_SOCK}" \
-        -w start >/dev/null \
-        || fail "postgres did not start; see $DF_HOME/logs/postgres.log" 10
-fi
-
-# Create the deltaforge role + database (idempotent).
-PSQL() { "$PG_BIN/psql" -h "$PG_SOCK" -p "$PG_PORT" -U postgres -d postgres -tAc "$1" 2>/dev/null; }
-if [ "$(PSQL "SELECT 1 FROM pg_roles WHERE rolname='deltaforge'")" != "1" ]; then
-    PSQL "CREATE ROLE deltaforge WITH LOGIN PASSWORD '${PG_PASSWORD}' SUPERUSER" >/dev/null \
-        || fail "could not create role deltaforge" 10
-fi
-if [ "$(PSQL "SELECT 1 FROM pg_database WHERE datname='deltaforge'")" != "1" ]; then
-    PSQL "CREATE DATABASE deltaforge OWNER deltaforge" >/dev/null \
-        || fail "could not create database deltaforge" 10
-fi
-log "postgres ready: postgres://deltaforge@127.0.0.1:${PG_PORT}/deltaforge"
-
-# ----- 2. delta-forge-server (control plane) ---------------------------------
-
-export DELTA_FORGE_CONFIG_DIR="$DF_HOME/config"
-export DELTA_FORGE_DB_URL="postgres://deltaforge:${PG_PASSWORD}@127.0.0.1:${PG_PORT}/deltaforge"
-export DELTA_FORGE_ADMIN_PASSWORD="$ADMIN_PWD"
-export DELTA_FORGE_ENGINEER_PASSWORD="$ENGINEER_PWD"
-export DELTA_FORGE_BIND_ADDR="127.0.0.1:${CTRL_PORT}"
-export DELTA_FORGE_LICENSE_KEY="$DELTA_FORGE_LICENSE_KEY"
-
-# Pass 1: bootstrap. The server writes config.toml then tries to recursively
-# re-enter cmd_run while still holding the instance lock; the inner call
-# fails to acquire it and exits non-zero. config.toml is already on disk
-# at that point, so we just clear the stale lock and move on. Mirrors
-# the comment block in ../docker/bench-entrypoint.sh.
-if [ ! -f "$DELTA_FORGE_CONFIG_DIR/config.toml" ]; then
-    log "pass 1: headless bootstrap"
-    "$SERVER_BIN" >> "$DF_HOME/logs/control.log" 2>&1 || true
-    if [ ! -f "$DELTA_FORGE_CONFIG_DIR/config.toml" ]; then
-        tail -30 "$DF_HOME/logs/control.log" >&2
-        fail "pass 1 did not write config.toml" 11
+    log "launching the installed platform: $PLATFORM_BIN"
+    # The platform is a desktop app: software-render (WebKit) and supply a
+    # virtual display on a headless Linux host, mirroring the parent ./bench.
+    if [ "$(uname -s)" = "Linux" ] && [ -z "${DISPLAY:-}" ] && command -v xvfb-run >/dev/null 2>&1; then
+        env WEBKIT_DISABLE_DMABUF_RENDERER=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 \
+            xvfb-run -a "$PLATFORM_BIN" >>"$DF_HOME/logs/platform.log" 2>&1 < /dev/null &
+    else
+        env WEBKIT_DISABLE_DMABUF_RENDERER=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 \
+            "$PLATFORM_BIN" >>"$DF_HOME/logs/platform.log" 2>&1 < /dev/null &
     fi
-fi
-rm -f "$DELTA_FORGE_CONFIG_DIR/bootstrap.lock"
-
-# Pass 2: serve. Start in background, wait for /api/v1/health.
-if ! pgrep -f "${SERVER_BIN}" >/dev/null 2>&1; then
-    log "pass 2: starting server in serve mode"
-    nohup "$SERVER_BIN" >> "$DF_HOME/logs/control.log" 2>&1 < /dev/null &
-    echo $! > "$DF_HOME/server.pid"
-fi
-
-log "waiting for control plane /api/v1/health on :${CTRL_PORT}..."
-for i in $(seq 1 90); do
-    if curl -fsS "$CTRL_URL/api/v1/health" 2>/dev/null | grep -q healthy; then
-        log "control plane healthy after ${i}s"
-        break
-    fi
-    if [ "$i" -eq 90 ]; then
-        tail -30 "$DF_HOME/logs/control.log" >&2
-        fail "control plane did not become healthy in 90s" 11
-    fi
-    sleep 1
-done
-
-# ----- 3. delta-forge-compute (worker) ---------------------------------------
-
-if ! pgrep -f "${COMPUTE_BIN}" >/dev/null 2>&1; then
-    log "starting worker on :${COMPUTE_PORT}"
-    CONTROL_PLANE_URL="$CTRL_URL" \
-    BIND_PORT="${COMPUTE_PORT}" \
-    NODE_SECRET="$NODE_SECRET" \
-    NODE_ID="$NODE_ID" \
-    DISPLAY_NAME="${DISPLAY_NAME:-Driver Bench Worker}" \
-        nohup "$COMPUTE_BIN" >> "$DF_HOME/logs/worker.log" 2>&1 < /dev/null &
-    echo $! > "$DF_HOME/worker.pid"
+    PLATFORM_PID=$!
+    echo "$PLATFORM_PID" > "$DF_HOME/platform.pid"
+    log "waiting for $CTRL_URL/api/v1/health (up to 120s)..."
+    for i in $(seq 1 120); do
+        if is_healthy; then log "platform healthy after ${i}s"; break; fi
+        if ! kill -0 "$PLATFORM_PID" 2>/dev/null; then
+            tail -30 "$DF_HOME/logs/platform.log" >&2 || true
+            fail "platform exited during startup. See $DF_HOME/logs/platform.log" 11
+        fi
+        [ "$i" -eq 120 ] && { tail -30 "$DF_HOME/logs/platform.log" >&2 || true; fail "platform not healthy in 120s" 11; }
+        sleep 1
+    done
 fi
 
-log "waiting for worker /health on :${COMPUTE_PORT}..."
-for i in $(seq 1 60); do
-    if curl -fsS "$COMPUTE_URL/health" 2>/dev/null | grep -q healthy; then
-        log "worker healthy after ${i}s"
-        break
-    fi
-    if [ "$i" -eq 60 ]; then
-        tail -30 "$DF_HOME/logs/worker.log" >&2
-        fail "worker did not become healthy in 60s" 12
-    fi
-    sleep 1
-done
+# ----- 2. authenticate -------------------------------------------------------
 
-# ----- 4. license activation -------------------------------------------------
-
-log "activating license..."
-TOKEN="$(curl -fsS -X POST "$CTRL_URL/api/v1/auth/token" \
-        -H 'Content-Type: application/json' \
-        -d "{\"grant_type\":\"password\",\"username\":\"${ADMIN_EMAIL}\",\"password\":\"${ADMIN_PWD}\"}" \
-    | jq -re '.access_token')" \
-    || fail "could not obtain admin access token" 13
-ACT_RESP="$(curl -s -X POST "$CTRL_URL/api/v1/license/activate" \
-    -H "Authorization: Bearer $TOKEN")"
-ACT_STATUS="$(echo "$ACT_RESP" | jq -re '.activationStatus' 2>/dev/null || echo unknown)"
-if [ "$ACT_STATUS" != "activated" ]; then
-    echo "$ACT_RESP" | head -c 500 >&2; echo >&2
-    fail "license activation returned status=$ACT_STATUS" 13
+if [ -n "${DF_TOKEN:-}" ]; then
+    TOKEN="$DF_TOKEN"
+    log "using DF_TOKEN for control-plane auth"
+else
+    command -v jq >/dev/null 2>&1 || fail "jq is required (run ./scripts/install.sh)" 13
+    TOKEN="$(curl -fsS -X POST "$CTRL_URL/api/v1/auth/token" \
+            -H 'Content-Type: application/json' \
+            -d "{\"grant_type\":\"password\",\"username\":\"${ADMIN_EMAIL}\",\"password\":\"${ADMIN_PWD}\"}" \
+        | jq -re '.access_token' 2>/dev/null || true)"
+    [ -n "$TOKEN" ] && [ "$TOKEN" != "null" ] || fail \
+        "could not authenticate as ${ADMIN_EMAIL} at $CTRL_URL.
+  Set DF_USERNAME / DF_PASSWORD (or DF_TOKEN) for your instance and re-run." 13
+    log "authenticated as ${ADMIN_EMAIL}"
 fi
-log "license activated: $(echo "$ACT_RESP" | jq -r '"\(.tier) tier, \(.activationsUsed)/\(.activationsMax) seats, expires \(.expiresAt)"')"
 
-# ----- 5. bench zone ---------------------------------------------------------
+# ----- 3. bench zone ---------------------------------------------------------
+# When this script launches a fresh platform, it self-activates at bootstrap from
+# the DELTA_FORGE_LICENSE_KEY in the environment (the benchmark bundles no
+# license), so no explicit activation step is needed here. When reusing an
+# already-running platform, that instance is already licensed.
 
 ZONE_PATH="$DF_HOME/data/${ZONE_NAME}"
 mkdir -p "$ZONE_PATH"
-ZONE_LIST="$(curl -fsS "$CTRL_URL/api/v1/catalog/zones" -H "Authorization: Bearer $TOKEN")"
-if echo "$ZONE_LIST" | jq -re --arg n "$ZONE_NAME" 'map(select(.name==$n)) | length' | grep -q '^0$'; then
+ZONE_LIST="$(curl -fsS "$CTRL_URL/api/v1/catalog/zones" -H "Authorization: Bearer $TOKEN" 2>/dev/null || echo '[]')"
+if printf '%s' "$ZONE_LIST" | jq -re --arg n "$ZONE_NAME" 'map(select(.name==$n)) | length' 2>/dev/null | grep -q '^0$'; then
     log "creating zone '$ZONE_NAME' at $ZONE_PATH"
     curl -fsS -X POST "$CTRL_URL/api/v1/catalog/zones" \
-        -H "Authorization: Bearer $TOKEN" \
-        -H 'Content-Type: application/json' \
+        -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
         -d "{\"name\":\"${ZONE_NAME}\",\"zone_type\":\"silver\",\"storage_root\":\"${ZONE_PATH}\"}" \
-        >/dev/null \
-        || fail "could not create zone $ZONE_NAME" 14
+        >/dev/null || fail "could not create zone $ZONE_NAME" 14
 else
-    log "zone '$ZONE_NAME' already exists"
+    log "zone '$ZONE_NAME' already present"
 fi
 
-# ----- 6. unixODBC DSN -------------------------------------------------------
+# ----- 4. unixODBC driver + DSN ----------------------------------------------
 
-# Write driver registration + DSN entries to user-local config files. We
-# back up any pre-existing config the FIRST time (idempotent: subsequent
-# runs do not clobber the backup).
-
-DSN_NAME="${DRIVER_BENCH_DSN:-deltaforge_bench}"
-DRIVER_NAME="DeltaForgeBench"
 ODBCINST="$HOME/.odbcinst.ini"
 ODBCDSN="$HOME/.odbc.ini"
 [ -f "$ODBCINST" ] && [ ! -f "$ODBCINST.bench-backup" ] && cp "$ODBCINST" "$ODBCINST.bench-backup"
-[ -f "$ODBCDSN"  ] && [ ! -f "$ODBCDSN.bench-backup" ] && cp "$ODBCDSN" "$ODBCDSN.bench-backup"
+[ -f "$ODBCDSN"  ] && [ ! -f "$ODBCDSN.bench-backup"  ] && cp "$ODBCDSN"  "$ODBCDSN.bench-backup"
 
 cat > "$ODBCINST" <<EOF
 [ODBC]
@@ -274,7 +158,7 @@ EOF
 
 cat > "$ODBCDSN" <<EOF
 [${DSN_NAME}]
-Description    = DeltaForge bench DSN (self-provisioned)
+Description    = DeltaForge bench DSN
 Driver         = ${DRIVER_NAME}
 Server         = ${CTRL_URL}
 ComputeServer  = ${COMPUTE_URL}
@@ -285,25 +169,22 @@ EOF
 chmod 0600 "$ODBCDSN"
 log "unixODBC: DSN=$DSN_NAME driver=$ODBC_DRIVER_SO"
 
-# ----- 7. summary ------------------------------------------------------------
+# ----- 5. stack.env ----------------------------------------------------------
 
 cat > "$DF_HOME/stack.env" <<EOF
-# Generated by driver-bench/scripts/setup-host-stack.sh
+# Generated by driver-bench/scripts/setup-host-stack.sh (platform model)
 DF_STACK_HOME=$DF_HOME
-DF_STACK_PIDS_SERVER=$(cat "$DF_HOME/server.pid" 2>/dev/null || echo "")
-DF_STACK_PIDS_WORKER=$(cat "$DF_HOME/worker.pid" 2>/dev/null || echo "")
+DF_STACK_PLATFORM_PID=$PLATFORM_PID
 DF_STACK_CTRL_URL=$CTRL_URL
 DF_STACK_COMPUTE_URL=$COMPUTE_URL
-DF_STACK_PG_PORT=$PG_PORT
-DF_STACK_PG_DATA=$PG_DATA
-DF_STACK_PG_SOCK=$PG_SOCK
-DF_STACK_PG_BIN=$PG_BIN
 DF_STACK_ADMIN_EMAIL=$ADMIN_EMAIL
 DF_STACK_ADMIN_PWD=$ADMIN_PWD
 DF_STACK_DSN=$DSN_NAME
 DF_STACK_ZONE=$ZONE_NAME
+DF_STACK_ODBC_SO=$ODBC_DRIVER_SO
 DF_STACK_ADBC_SO=$ADBC_DRIVER_SO
 DF_STACK_CLI_BIN=$CLI_BIN
 EOF
 log "stack env written to $DF_HOME/stack.env"
+[ -n "$PLATFORM_PID" ] && log "platform launched by this script (pid $PLATFORM_PID); teardown stops it."
 log "ready. Next: ./scripts/build-fixture.sh && ./scripts/run_bench.sh"

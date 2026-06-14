@@ -1,0 +1,378 @@
+#!/usr/bin/env bash
+# DeltaForge benchmark launcher (Linux + macOS).
+#
+# One command to run the benchmark end to end:
+#   - boots the DeltaForge platform (embedded control plane + compute node),
+#   - waits until it is healthy,
+#   - runs the bench harness against it (plus DuckDB / Spark comparison engines),
+#   - tears the platform down on exit.
+#
+# Run ./install.sh first; it writes the .env this script reads.
+#
+# Usage:
+#   ./bench                                  # SF=1 smoke, all engines, read workloads
+#   ./bench --scale 10                       # standard tier
+#   ./bench --scale 10 --engines df,duckdb   # any bench_runner.py flag passes through
+#
+# Every argument after ./bench is forwarded verbatim to bench_runner.py.
+
+set -euo pipefail
+REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$REPO_ROOT"
+
+if [ -t 1 ]; then
+    BOLD=$'\033[1m'; DIM=$'\033[2m'; RED=$'\033[1;31m'; GRN=$'\033[1;32m'; YEL=$'\033[1;33m'; CYN=$'\033[1;36m'; RST=$'\033[0m'
+else BOLD=""; DIM=""; RED=""; GRN=""; YEL=""; CYN=""; RST=""; fi
+log()  { printf '%s[bench]%s %s\n' "$CYN" "$RST" "$*"; }
+ok()   { printf '%s[bench]%s %s✓%s %s\n' "$CYN" "$RST" "$GRN" "$RST" "$*"; }
+warn() { printf '%s[bench]%s %s!%s %s\n' "$CYN" "$RST" "$YEL" "$RST" "$*" >&2; }
+fail() {
+    local msg="$1"; shift || true
+    printf '\n%s[bench] ✗ %s%s\n' "$RED" "$msg" "$RST" >&2
+    while [ "$#" -gt 0 ]; do printf '  %s→%s %s\n' "$YEL" "$RST" "$1" >&2; shift; done
+    exit 1
+}
+
+# Friendly guidance when the license is missing or rejected by the engine.
+license_help() {
+    printf '\n%s[bench] DeltaForge needs a valid license key to run the engine.%s\n' "$YEL" "$RST" >&2
+    printf '  The benchmark does not bundle a key. Either none is set in .env, or the one\n' >&2
+    printf '  configured was rejected (expired, wrong, or out of daily compute).\n\n' >&2
+    printf '  %sFix (1 minute, free, no credit card):%s\n' "$BOLD" "$RST" >&2
+    printf '    1. Get a free key at https://console.deltaforge.org\n' >&2
+    printf '    2. Put it in .env:   DELTA_FORGE_LICENSE_KEY=<your-key>\n' >&2
+    printf '       (or re-run:  DELTA_FORGE_LICENSE_KEY=<your-key> ./install.sh)\n' >&2
+    printf '    3. ./bench\n' >&2
+}
+
+# Heuristic: does this text look like a license/quota rejection (vs auth/network)?
+looks_like_license_limit() {
+    printf '%s' "$1" | grep -qiE 'licen|quota|exhaust|dfcu|compute unit|usage cap|limit exceeded|over.?limit|rate.?limit|payment required|\b4(02|29)\b'
+}
+
+# Distinguish "key installed but NOT ACTIVATED" (HTTP 403 NOT_ACTIVATED) from a
+# missing / rejected / exhausted key. The remedy is different: activate the
+# device, do not fetch a new key. Checked BEFORE looks_like_license_limit, which
+# would otherwise swallow this (the text contains "licen").
+looks_like_not_activated() {
+    printf '%s' "$1" | grep -qiE 'NOT_ACTIVATED|not activated|activate your license|license not activated'
+}
+
+# Guidance for the not-activated case.
+activation_help() {
+    printf '\n%s[bench] The license could not be activated on this machine.%s\n' "$YEL" "$RST" >&2
+    printf '  The benchmark auto-activates this device on boot, but the engine still\n' >&2
+    printf '  reports the license as not activated. Likely causes:\n' >&2
+    printf '    - No internet: activation is an online exchange with console.deltaforge.org.\n' >&2
+    printf '    - All device slots in use: a single-node license can be active on only ONE\n' >&2
+    printf '      machine at a time. Deactivate it elsewhere, or use a license with more nodes.\n' >&2
+    printf '    - The key is expired, revoked, or wrong.\n\n' >&2
+    printf '  Check your connection and the platform log, then re-run ./bench.\n' >&2
+    printf '  Manage your license at https://console.deltaforge.org\n' >&2
+}
+
+# ----- environment -----------------------------------------------------------
+
+[ -f .env ] || fail "No .env found." "Run ./install.sh first."
+set -a; . ./.env; set +a
+[ -x .venv/bin/python ] || fail "No Python venv found." "Run ./install.sh first."
+. .venv/bin/activate
+
+# DeltaForge needs a license key to run the engine; the benchmark bundles none.
+# Fail fast here with guidance instead of booting the whole platform only to have
+# every query rejected. A key that is present but expired/invalid still gets the
+# final verdict from the engine at the license probe further below.
+if [ -z "${DELTA_FORGE_LICENSE_KEY:-}" ]; then
+    license_help
+    fail "No license key configured (DELTA_FORGE_LICENSE_KEY is empty in .env)." \
+         "DeltaForge cannot run the engine without one; see the steps above."
+fi
+
+# ----- hermetic, headless platform environment -------------------------------
+# The DeltaForge platform is a desktop app whose first run normally opens an
+# interactive browser wizard and writes into the per-user app dirs + OS
+# keychain. For an unattended, repeatable, side-effect-free benchmark we:
+#   1. force HEADLESS bootstrap (env-driven, no wizard) against the platform's
+#      built-in embedded PostgreSQL (DELTA_FORGE_HEADLESS=1),
+#   2. redirect the platform's XDG dirs into .engine/xdg so its catalog, config,
+#      and embedded DB live inside this repo (never ~/.local/share/delta-forge)
+#      and can be wiped with `rm -rf .engine`,
+#   3. give the embedded PostgreSQL its own data dir + a free port so it never
+#      collides with (or reads) a DeltaForge install already on :5432,
+#   4. on Linux, disable WebKit's DMABUF renderer so the webview does not crash
+#      a beat after the control plane comes up (a real failure on Wayland).
+# Headless bootstrap needs a platform build that supports DELTA_FORGE_HEADLESS.
+# Against an older binary the platform falls back to the wizard and the run
+# reports a startup/license error instead of hanging on a browser window.
+XDG_ROOT="$REPO_ROOT/.engine/xdg"
+export XDG_DATA_HOME="$XDG_ROOT/data"
+export XDG_CONFIG_HOME="$XDG_ROOT/config"
+export XDG_CACHE_HOME="$XDG_ROOT/cache"
+mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME"
+# NB: we deliberately do NOT redirect the platform's HOME. License activation is
+#     DEVICE-bound: the activation token (~/.deltaforge/activation.token) and the
+#     machine instance id (~/.deltaforge/instance.id) resolve from $HOME, NOT XDG,
+#     and the console counts ONE device slot per machine. So the GUI and the
+#     benchmark deliberately SHARE one activation through ~/.deltaforge. We request
+#     activation on boot (DELTA_FORGE_ACTIVATE_ON_BOOT below): on a machine that has
+#     never run DeltaForge the benchmark takes the one slot itself (no GUI needed);
+#     if the machine is already activated (by the GUI or a prior run) the engine
+#     reuses it and consumes NO extra slot (idempotent, checked in
+#     delta-forge-control api/server.rs::spawn_inline_activation_if_requested).
+#     Isolating HOME would hide that shared activation and the engine would then
+#     reject every query with HTTP 403 NOT_ACTIVATED, so it is intentionally not
+#     done. (An earlier revision redirected HOME and broke activation this way.)
+
+export DELTA_FORGE_HEADLESS=1
+# Auto-activate this device against the license on first boot, so the benchmark
+# runs on a machine that has never opened the DeltaForge GUI. Device-bound and
+# idempotent: it takes the machine's ONE shared activation slot, or reuses an
+# existing activation (GUI or a prior run) and consumes no extra slot. Note a
+# single-node license can be active on only one machine at a time.
+export DELTA_FORGE_ACTIVATE_ON_BOOT="${DELTA_FORGE_ACTIVATE_ON_BOOT:-1}"
+export DELTA_FORGE_SKIP_DEMO_USER="${DELTA_FORGE_SKIP_DEMO_USER:-false}"
+# Advertise the embedded compute node on loopback. It binds 0.0.0.0:3031 by
+# default and would otherwise advertise the host's LAN IP for the catalog, which
+# the local CLI cannot rely on reaching (laptops / CI / containers / offline all
+# break that route). The benchmark is single-node and local, so pin it to
+# loopback so the CLI's query path resolves to 127.0.0.1:3031.
+export ADVERTISE_IP="${ADVERTISE_IP:-127.0.0.1}"
+
+# Free port for the embedded PostgreSQL so we never touch a DeltaForge already
+# on :5432. Honors an explicit DELTAFORGE_PG_PORT if the operator set one.
+if [ -z "${DELTAFORGE_PG_PORT:-}" ]; then
+    DELTAFORGE_PG_PORT="$(python3 - <<'PY'
+import socket
+port = 5442
+for p in range(5442, 5600):
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", p)); s.close(); port = p; break
+    except OSError:
+        continue
+print(port)
+PY
+)"
+fi
+export DELTAFORGE_PG_PORT
+log "embedded PostgreSQL: port $DELTAFORGE_PG_PORT, data under .engine/xdg (isolated)"
+
+if [ "$(uname -s)" = "Linux" ]; then
+    # The platform is a Tauri desktop app; its WebKitGTK webview crashes a beat
+    # after the control plane binds its port on some Wayland + GPU-driver combos
+    # (surfacing as connection-refused on the next API call). The benchmark needs
+    # the control plane, not the window, so force the most conservative webview
+    # path: X11 backend (XWayland on a Wayland session) + software GL + no DMABUF
+    # / GPU compositing. The window renders blank or not at all; the control
+    # plane stays up. Verified stable (5/5 auth over 25s) where disabling DMABUF
+    # alone was flaky (it survived with verbose logging, crashed without it).
+    export GDK_BACKEND=x11
+    export LIBGL_ALWAYS_SOFTWARE=1
+    export WEBKIT_DISABLE_DMABUF_RENDERER=1
+    export WEBKIT_DISABLE_COMPOSITING_MODE=1
+fi
+
+: "${DF_PLATFORM_BIN:?DF_PLATFORM_BIN missing from .env; re-run install.sh}"
+: "${DF_CLI_PATH:?DF_CLI_PATH missing from .env; re-run install.sh}"
+[ -e "$DF_PLATFORM_BIN" ] || fail "Platform binary not found: $DF_PLATFORM_BIN" "Re-run ./install.sh"
+[ -x "$DF_CLI_PATH" ]     || fail "CLI binary not found: $DF_CLI_PATH" "Re-run ./install.sh"
+
+mkdir -p logs
+PLATFORM_LOG="logs/platform.log"
+: > "$PLATFORM_LOG"
+XVFB_LOG="logs/xvfb.log"
+: > "$XVFB_LOG"
+
+# Control-plane port from DELTA_FORGE_BIND_ADDR (host:port), default 3000.
+PORT="$(printf '%s' "${DELTA_FORGE_BIND_ADDR:-127.0.0.1:3000}" | sed -E 's/.*:([0-9]+)$/\1/')"
+if ! python3 - "$PORT" <<'PY' 2>/dev/null
+import socket, sys
+s = socket.socket()
+try: s.bind(("127.0.0.1", int(sys.argv[1]))); s.close()
+except OSError: sys.exit(1)
+PY
+then
+    fail "Port $PORT is already in use." \
+         "Another DeltaForge (or service) is likely running. Stop it, or change DELTA_FORGE_BIND_ADDR and DF_CONTROL_URL in .env."
+fi
+
+# ----- platform lifecycle ----------------------------------------------------
+
+PLATFORM_PID=""
+XVFB_PID=""
+stop_platform() {
+    [ -n "$PLATFORM_PID" ] && kill "$PLATFORM_PID" 2>/dev/null || true
+    [ -n "$PLATFORM_PID" ] && wait "$PLATFORM_PID" 2>/dev/null || true
+    # The platform's embedded PostgreSQL is a separate process that can outlive
+    # the GUI. Stop only the one running against our isolated data dir; a
+    # DeltaForge PG the user runs elsewhere has a different data dir and is left
+    # untouched. `pgrep -x postgres` never matches this shell, so no self-kill.
+    for pg in $(pgrep -x postgres 2>/dev/null); do
+        if ps -p "$pg" -o command= 2>/dev/null | grep -q "${XDG_DATA_HOME:-__none__}"; then
+            kill "$pg" 2>/dev/null || true
+        fi
+    done
+    # Tear down the off-screen Xvfb we started for the platform window (if any),
+    # after the platform that was using it has already been stopped above.
+    [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null || true
+    [ -n "$XVFB_PID" ] && wait "$XVFB_PID" 2>/dev/null || true
+}
+trap stop_platform EXIT INT TERM
+
+# Surface the actionable cause when startup fails, by scanning the platform log
+# for the failure modes a first-time user is most likely to hit.
+diagnose_startup_failure() {
+    local lic
+    lic="$(grep -iE 'license|activat|exhaust|quota|expired|seat|node limit|max_(nodes|cores|users)' "$PLATFORM_LOG" 2>/dev/null | tail -3 || true)"
+    if [ -n "$lic" ]; then
+        warn "the platform log mentions licensing:"
+        printf '%s\n' "$lic" | sed 's/^/        /' >&2
+        license_help
+    fi
+    if grep -iqE 'bind|address already in use|EADDRINUSE' "$PLATFORM_LOG" 2>/dev/null; then
+        warn "the platform could not bind its port. Another instance may be running; free port $PORT and retry."
+    fi
+    if [ "$(uname -s)" = "Linux" ] && grep -iqE 'display|x11|wayland|gtk|cannot open display|DISPLAY' "$PLATFORM_LOG" 2>/dev/null; then
+        warn "the platform needs a display. Install Xvfb so the launcher can provide a virtual one (Arch: sudo pacman -S xorg-server-xvfb; Debian/Ubuntu: sudo apt-get install -y xvfb)."
+    fi
+}
+
+# Render the desktop platform's window OFF-SCREEN. The platform is a Tauri
+# desktop app and always creates a window (it shows a login/welcome view the
+# benchmark never uses). We point it at a private Xvfb virtual display so nothing
+# pops up on the operator's screen; this also makes a truly headless host work.
+# Needs only the `Xvfb` binary (Arch: xorg-server-xvfb; Debian/Ubuntu: xvfb), NOT
+# the Debian-only `xvfb-run` wrapper. On success it exports DISPLAY and sets
+# XVFB_PID; it returns non-zero when Xvfb is missing or will not start so the
+# caller can fall back to the operator's real display.
+start_virtual_display() {
+    command -v Xvfb >/dev/null 2>&1 || return 1
+    local n sock i
+    for n in 99 100 101 102 103 104 105 106 107 108; do
+        sock="/tmp/.X11-unix/X${n}"
+        if [ -e "$sock" ]; then
+            continue
+        fi
+        Xvfb ":${n}" -screen 0 1280x1024x24 -nolisten tcp >>"$XVFB_LOG" 2>&1 &
+        XVFB_PID=$!
+        i=0
+        while [ "$i" -lt 50 ]; do
+            if ! kill -0 "$XVFB_PID" 2>/dev/null; then
+                break   # Xvfb died on this display number; try the next one.
+            fi
+            if [ -e "$sock" ]; then
+                export DISPLAY=":${n}"
+                return 0
+            fi
+            i=$((i + 1))
+            sleep 0.1
+        done
+        kill "$XVFB_PID" 2>/dev/null || true
+        wait "$XVFB_PID" 2>/dev/null || true
+        XVFB_PID=""
+    done
+    return 1
+}
+
+log "starting the DeltaForge platform"
+# Keep the platform's window off the operator's screen for an unattended run.
+if [ "$(uname -s)" = "Linux" ]; then
+    if start_virtual_display; then
+        log "platform window rendered off-screen on virtual display $DISPLAY (nothing pops up)"
+    elif [ -n "${DISPLAY:-}" ]; then
+        warn "Xvfb not found: the platform's blank window will appear on your screen during the run."
+        warn "to hide it, install Xvfb (Arch: sudo pacman -S xorg-server-xvfb; Debian/Ubuntu: sudo apt-get install -y xvfb)."
+    else
+        warn "no DISPLAY and Xvfb is not installed; the desktop platform needs a display and may fail to start."
+        warn "install Xvfb (Arch: sudo pacman -S xorg-server-xvfb; Debian/Ubuntu: sudo apt-get install -y xvfb), then retry."
+    fi
+fi
+"$DF_PLATFORM_BIN" >>"$PLATFORM_LOG" 2>&1 & PLATFORM_PID=$!
+
+log "waiting for the control plane to become healthy (up to 180s)"
+deadline=$(( $(date +%s) + 180 ))
+healthy=0
+while [ "$(date +%s)" -lt "$deadline" ]; do
+    if ! kill -0 "$PLATFORM_PID" 2>/dev/null; then
+        printf '%s\n' "$DIM"; tail -30 "$PLATFORM_LOG" >&2 || true; printf '%s' "$RST"
+        diagnose_startup_failure
+        fail "The platform exited during startup." "Full log: $PLATFORM_LOG"
+    fi
+    if "$DF_CLI_PATH" health >/dev/null 2>&1; then healthy=1; break; fi
+    sleep 2
+done
+if [ "$healthy" -ne 1 ]; then
+    printf '%s\n' "$DIM"; tail -30 "$PLATFORM_LOG" >&2 || true; printf '%s' "$RST"
+    diagnose_startup_failure
+    fail "The platform did not become healthy within 180s." "Full log: $PLATFORM_LOG"
+fi
+ok "platform healthy"
+
+# ----- early license check ---------------------------------------------------
+# A healthy control plane does NOT mean the license still has daily capacity.
+# Run one tiny query now so a tapped/expired license fails fast with guidance,
+# instead of letting all 22+ workload queries fail one by one. The CLI prints
+# errors to stdout and still exits 0, so we inspect the OUTPUT, not the code.
+log "checking benchmark license capacity (waiting for compute to warm up)"
+# A healthy control plane does NOT mean the embedded compute node is ready, that
+# the device is activated, nor that the license still has daily capacity. Poll a
+# tiny query: it has to (a) authenticate, (b) reach the freshly-spawned compute
+# node (which comes up a few seconds AFTER the control plane), (c) wait for the
+# on-boot device activation (DELTA_FORGE_ACTIVATE_ON_BOOT, an async online
+# exchange) to land, and (d) not hit the license cap. NOT_ACTIVATED is therefore
+# RETRYABLE (activation in flight); a rejected/capped key is NOT (fail fast). The
+# CLI prints errors to stdout and still exits 0, so we inspect the OUTPUT.
+probe_out=""; probe_ok=0; saw_not_activated=0
+probe_deadline=$(( $(date +%s) + 90 ))
+while [ "$(date +%s)" -lt "$probe_deadline" ]; do
+    if ! kill -0 "$PLATFORM_PID" 2>/dev/null; then
+        printf '%s\n' "$DIM"; tail -30 "$PLATFORM_LOG" >&2 || true; printf '%s' "$RST"
+        diagnose_startup_failure
+        fail "The platform exited while waiting for compute to become ready." "Full log: $PLATFORM_LOG"
+    fi
+    probe_out="$("$DF_CLI_PATH" --format json query "SELECT 1 AS ok" 2>&1 || true)"
+    if looks_like_not_activated "$probe_out"; then
+        # Device activation is requested on boot and runs asynchronously, so the
+        # first probes can race ahead of it. Keep polling; only a NOT_ACTIVATED
+        # that survives the whole deadline is a real failure (handled below).
+        saw_not_activated=1
+        sleep 2; continue
+    fi
+    if looks_like_license_limit "$probe_out"; then
+        license_help
+        fail "Benchmark license check failed before running (daily cap, or the key was rejected)." \
+             "Platform said: $(printf '%s' "$probe_out" | tr '\n' ' ' | sed -E 's/  +/ /g' | cut -c1-200)"
+    fi
+    if printf '%s' "$probe_out" | grep -qiE '"row_count"|"rows"'; then probe_ok=1; break; fi
+    sleep 2
+done
+if [ "$probe_ok" -ne 1 ]; then
+    if [ "$saw_not_activated" -eq 1 ]; then
+        activation_help
+        fail "The license did not activate within 90s." \
+             "Platform said: $(printf '%s' "$probe_out" | tr '\n' ' ' | sed -E 's/  +/ /g' | cut -c1-200)"
+    fi
+    printf '%s\n' "$DIM"; printf '%s\n' "$probe_out" | tail -8 >&2; printf '%s' "$RST"
+    fail "A probe query did not return a result within 90s (compute did not come up, or auth failed)." \
+         "Check DF_USERNAME/DF_PASSWORD in .env and the platform log: $PLATFORM_LOG"
+fi
+ok "license OK — platform is serving queries"
+
+# ----- run the harness -------------------------------------------------------
+
+if [ "$#" -eq 0 ]; then
+    set -- --scale 1 \
+        --engines df,duckdb,spark-default,spark-tuned \
+        --workloads tpch_read_delta,tpcds_read_delta,ssb_read_delta,job_read_delta,synthetic_write_delta
+fi
+
+log "running: bench_runner.py $*"
+set +e
+python bench_runner.py "$@"
+RC=$?
+set -e
+
+echo
+if [ "$RC" -eq 0 ]; then ok "benchmark complete"; else warn "bench_runner exited with code $RC (some steps may have failed; see the report)"; fi
+log "platform log: $PLATFORM_LOG"
+exit "$RC"

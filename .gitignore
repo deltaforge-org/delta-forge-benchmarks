@@ -33,18 +33,12 @@ duckdb_write_out/
 spark_write_out/
 
 # ---------------------------------------------------------------------------
-# Staged engine binaries (set up by scripts/stage-local-bins.sh; build
-# inputs for docker-build.ps1). The image is reproduced from source, not
-# from these files, so they don't belong in git.
+# Installed engine artifacts. install.sh / install.ps1 download the official
+# signed platform + CLI releases into .engine/ (binaries, download cache, and
+# a bundled JRE). Several hundred MB; always re-fetchable, never committed.
 # ---------------------------------------------------------------------------
+.engine/
 build/
-build/df-bins/
-
-# docker/bins/ holds delta-forge-cli/server/worker binaries that the
-# Windows-host docker-compose override bind-mounts into the bench
-# container. Several hundred MB each; reproducible from source via the
-# engine repo's release-ci profile. Do not commit.
-docker/bins/
 
 # ---------------------------------------------------------------------------
 # Downloaded benchmark queries. The workload module itself
@@ -82,16 +76,11 @@ venv/
 .ruff_cache/
 
 # ---------------------------------------------------------------------------
-# Local docker overrides
+# Generated config. install.sh / install.ps1 write .env with resolved paths
+# and the license key; it is per-machine and not committed.
 # ---------------------------------------------------------------------------
-# docker-compose.override.yml is intentionally NOT in this list: the
-# Windows-host overrides (read-only neo4j mount, no-op dropcaches,
-# patched entrypoint mount) are committed so other Windows contributors
-# get them automatically. The .env file IS ignored because it carries
-# the license key.
-docker/.env
-docker/.env.local
-docker/build/
+.env
+.env.local
 
 # ---------------------------------------------------------------------------
 # Editors / OS

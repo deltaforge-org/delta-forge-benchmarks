@@ -1,31 +1,26 @@
-# Pinned Python dependencies for delta-forge-benchmarks.
+# Core dependencies for delta-forge-benchmarks (required to run the bench).
 #
-# Versions match docker/Dockerfile so a venv install on a Linux server
-# behaves identically to the published Docker image.
+# These are version FLOORS, not exact pins, on purpose: a binary wheel must
+# exist for whatever Python you run (3.9 through 3.14 and beyond), otherwise pip
+# falls back to slow, fragile source builds. The exact versions pip resolves are
+# recorded per run in manifest.json, which is what makes a result reproducible.
+# install.sh installs these with --prefer-binary.
 #
 # Install with:
 #     python3 -m venv .venv
 #     . .venv/bin/activate
-#     pip install -r requirements.txt
+#     pip install --prefer-binary -r requirements.txt
 #
-# Or use scripts/install.sh which does this plus apt prerequisites.
+# (install.sh / install.ps1 do this for you.)
 
-# Engine: Spark + Delta. Both pinned to the same minor line so PyPI's
-# dependency resolver picks compatible JARs.
-pyspark==4.0.0
-delta-spark==4.0.0
+# Engine: Spark + Delta. Kept on the 4.0 line so PyPI resolves compatible JARs.
+# pyspark is distributed as an sdist (no wheel, but no compile either).
+pyspark>=4.0.0,<4.1
+delta-spark>=4.0.0,<4.1
 
-# Data: TPC-H generation + Parquet writer.
-duckdb==1.1.3
-deltalake==0.22.3
+# Data: TPC-H/SSB generation + Parquet/Delta writing.
+duckdb>=1.1.3
+deltalake>=0.22.3
 
 # System metrics: process-tree RSS + CPU sampling during measured steps.
-psutil==6.1.0
-
-# Reporting: pandas for the optional summary frame, matplotlib + plotly for
-# charts. The minimal report.md generator works without any of these but
-# they ship by default so the report harness has them when needed.
-pandas==2.2.3
-matplotlib==3.9.2
-plotly==5.24.1
-Jinja2==3.1.4
+psutil>=6.1.0

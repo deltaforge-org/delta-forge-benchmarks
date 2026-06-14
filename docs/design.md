@@ -31,18 +31,21 @@ that's a release blocker.
    on-disk Delta directories.
 
 2. **One engine runs at a time.** The harness never co-runs engines.
-   Whichever engine is active gets the container's full CPU and memory
+   Whichever engine is active gets the host's full CPU and memory
    budget.
 
-3. **Identical sandbox.** Every engine runs inside the same Docker
-   image with the same `--cpus` and `--memory` limits. No engine has
-   a privilege, mount, or network advantage another does not have.
+3. **Identical sandbox.** Every engine runs as a subprocess on the
+   same host, against the same on-disk data, with no per-engine
+   privilege, mount, or network advantage. Fairness comes from
+   running one engine at a time on identical hardware and bytes, not
+   from a container boundary.
 
 4. **Explicit state purge between engines.** Engine processes are
-   killed, `/tmp` is cleared, and the host OS page cache is dropped
-   (via the privileged `dropcaches` sidecar) before any cold run.
-   Runs where the page cache could not be verified-cold are labeled
-   `cold-os-cache=unverified` and excluded from the headline number.
+   killed and `/tmp` is cleared before any cold run, and the OS page
+   cache is dropped where the host permits it (Linux with the
+   privileges to write `drop_caches`). Runs where the page cache could
+   not be verified-cold are labeled `cold-os-cache=unverified` and
+   excluded from the headline number.
 
 5. **Two Spark baselines published.** "Stock OSS defaults" (the
    config a user gets from `pip install pyspark` with no extra

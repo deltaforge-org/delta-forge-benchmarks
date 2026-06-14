@@ -74,16 +74,16 @@ from .base import (
 from . import _metrics
 
 
-# Process-name patterns for the cold-run purge. The control plane and
-# worker are kept alive across cold runs (entrypoint owns them); the
-# OS page cache and the worker's in-process buffer pool are what cold
-# actually invalidates here. To get a *fully* cold worker, the operator
-# can `docker compose restart bench` between runs; the bench labels
-# such runs explicitly.
+# Process-name patterns for the cold-run purge. The DeltaForge platform hosts
+# the control plane AND the compute node in a single process (compute is
+# embedded in-process; there is no separate worker), so the platform process
+# and the short-lived CLI are the only DeltaForge processes that exist. The OS
+# page cache and the platform's in-process buffer pool are what a cold run
+# invalidates; a fully cold platform requires restarting it between runs, which
+# the `bench` launcher owns.
 DF_PROCESS_PATTERNS = [
+    "deltaforge",
     "delta-forge-cli",
-    "delta-forge-server",
-    "delta-forge-compute",
 ]
 
 
@@ -137,7 +137,11 @@ class DeltaForgeEngine(Engine):
         return env
 
     def _locate_worker_pid(self) -> int | None:
-        """Find delta-forge-compute's PID for RSS/CPU sampling.
+        """Find the DeltaForge platform process PID for RSS/CPU sampling.
+
+        Compute is embedded in the platform process, so the platform is the
+        heavy process to sample. We match on the platform binary's basename
+        (from ``DF_PLATFORM_BIN``, falling back to ``deltaforge``).
 
         Falls back through `pgrep` (Linux/macOS) then a no-op on platforms
         without it. The PID is purely for the metric sampler; failing to
@@ -147,9 +151,14 @@ class DeltaForgeEngine(Engine):
         pgrep = shutil.which("pgrep")
         if not pgrep:
             return None
+        platform_bin = os.environ.get("DF_PLATFORM_BIN", "")
+        pattern = os.path.basename(platform_bin) if platform_bin else "deltaforge"
+        # An extracted AppImage runs as `AppRun`; match either name.
+        if pattern in ("AppRun", ""):
+            pattern = "deltaforge"
         try:
             r = subprocess.run(
-                [pgrep, "-f", "delta-forge-compute"],
+                [pgrep, "-f", pattern],
                 capture_output=True, text=True, timeout=5,
             )
             if r.returncode != 0:

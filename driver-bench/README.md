@@ -68,22 +68,28 @@ per-phase distributions.
 ## How to run
 
 Same shape as the other benches in this repo (`install.sh` + `run_smoke.sh` +
-`run_bench.sh`). Two host modes plus a docker path.
+`run_bench.sh`), run natively on the host.
 
 ### Host mode (canonical)
+
+This bench needs a DeltaForge **platform** to talk to. The easiest path is to
+install the parent benchmark suite first (`../install.sh`), which downloads the
+official platform + CLI; `setup-host-stack.sh` will then launch it if nothing is
+already serving. If you already run DeltaForge (the desktop app, or the parent
+`../bench`), it just connects to that.
 
 ```
 # 1. one-shot host setup (unixODBC, cmake, build-essential, .NET 8)
 ./scripts/install.sh
 
-# 2. stage the engine binaries (delta-forge-server / -compute / -cli)
-#    and the ODBC + ADBC driver .so files
-../scripts/stage-local-bins.sh         # from parent benchmarks repo
+# 2. download the released ODBC + ADBC driver .so files (the subjects under test)
 ./scripts/stage-driver-bins.sh
 
-# 3. provision a self-contained DeltaForge stack on this host
-export DELTA_FORGE_LICENSE_KEY=dfk_...   # free at https://console.deltaforge.org
-./scripts/setup-host-stack.sh            # postgres + server + worker + license + zone + DSN
+# 3. connect to a DeltaForge platform + configure the zone + DSN
+#    (uses an instance already at http://127.0.0.1:3000, else launches the one
+#     the parent ../install.sh staged under ../.engine)
+export DELTA_FORGE_LICENSE_KEY=DF1...   # only needed if a fresh platform must be launched
+./scripts/setup-host-stack.sh
 
 # 4. smoke (~30s, 100k rows)
 ./scripts/run_smoke.sh
@@ -91,41 +97,25 @@ export DELTA_FORGE_LICENSE_KEY=dfk_...   # free at https://console.deltaforge.or
 # 5. canonical run (~2-5 min, 1M rows, both C++ and .NET, all driver modes)
 ./scripts/run_bench.sh
 
-# (optional) tear the stack down -- keeps pgdata + config on disk so a
-# re-run of setup is fast; pass --purge to wipe everything
-./scripts/teardown-host-stack.sh
+# (optional) stop a platform this bench started + restore your ODBC config
+./scripts/teardown-host-stack.sh --restore-odbc
 ```
 
-What `setup-host-stack.sh` provisions (mirrors `../docker/bench-entrypoint.sh`):
+What `setup-host-stack.sh` sets up:
 
-| Component        | Where                                   |
-|------------------|-----------------------------------------|
-| Postgres         | embedded `~/.deltaforge/pg-install`, port 55432 |
-| Control plane    | `deltaforge-server` on 127.0.0.1:13000   |
-| Compute worker   | `deltaforge-compute` on 127.0.0.1:13031  |
-| License          | activated via `POST /api/v1/license/activate` |
-| Bench zone       | `bench` (silver), `/tmp/df-bench-stack/data/bench` |
-| Fixture table    | built by `build-fixture.sh` via ODBC CTAS (default 1M rows × 22 mixed-type cols) |
-| unixODBC DSN     | `~/.odbc.ini` + `~/.odbcinst.ini` (originals backed up to `*.bench-backup`) |
+| Piece               | Where                                                              |
+|---------------------|--------------------------------------------------------------------|
+| DeltaForge platform | reused at `http://127.0.0.1:3000` if running, else the `../.engine` AppImage is launched (control plane + compute + DB in one process) |
+| License             | your `DELTA_FORGE_LICENSE_KEY`, self-activated at bootstrap (required to launch a fresh platform; no key is bundled) |
+| Drivers             | released ODBC + ADBC `.so` in `build/df-drivers/` (from `stage-driver-bins.sh`) |
+| Bench zone          | `bench` (silver) under `${DF_HOME:-/tmp/df-bench-stack}/data/bench`  |
+| Fixture table       | built by `build-fixture.sh` via ODBC CTAS (default 1M rows × 22 mixed-type cols) |
+| unixODBC DSN        | `~/.odbc.ini` + `~/.odbcinst.ini` (originals backed up to `*.bench-backup`) |
 
 Both `run_smoke.sh` and `run_bench.sh` source `${DF_HOME:-/tmp/df-bench-stack}/stack.env`
-that `setup-host-stack.sh` writes, so the credentials, DSN, ports, and driver
+that `setup-host-stack.sh` writes, so the DSN, URLs, credentials, and driver
 paths are picked up automatically. Re-running `setup-host-stack.sh` is a no-op
-once the stack is up.
-
-### Docker mode
-
-For air-gapped reproducibility (mirrors how the TPC-H / SSB / JOB / TPC-DS
-benches in this repo run):
-
-```
-export DELTA_FORGE_LICENSE_KEY=dfk_...
-docker compose -f docker/docker-compose.yml up --build
-```
-
-The container builds on the parent `delta-forge-bench:local` image, adds
-unixODBC + the two driver `.so` files, and runs `scripts/run-in-container.sh`
-(which is the in-container equivalent of `setup-host-stack.sh` + `run_bench.sh`).
+once the platform is reachable.
 
 ### Tuning knobs
 
@@ -167,7 +157,8 @@ cmake --build build -j
 
 When you run the bench in client-mode against an external DeltaForge
 instance, the ODBC path resolves your driver through a configured DSN.
-The self-provisioned docker run writes the DSN automatically.
+`setup-host-stack.sh` writes the DSN automatically when it provisions a
+local host stack.
 
 Sample `~/.odbc.ini` for client-mode:
 

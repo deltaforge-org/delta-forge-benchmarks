@@ -61,8 +61,8 @@ dotnet run -c Release -- \
 ```
 
 The DSN must be configured the same way the C++ bench expects
-(`/etc/odbc.ini` or `~/.odbc.ini`). For the docker-self-provisioned
-flow, `../scripts/run-in-container.sh` writes both files automatically.
+(`/etc/odbc.ini` or `~/.odbc.ini`). `../scripts/setup-host-stack.sh`
+writes both files automatically when it provisions a local host stack.
 
 ## Initial results (100 k rows x 75 cols on demo.retail.fact_sales)
 

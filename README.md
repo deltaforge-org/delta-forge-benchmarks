@@ -49,55 +49,70 @@ sits this out (its `delta` extension is read-only).
 [All results pages →](published/index.md) ·
 [Methodology →](published/methodology.md)
 
-## Quickstart
+## Run it
 
-**1.** Get a **free** DeltaForge license key (no credit card required) at
-[console.deltaforge.org](https://console.deltaforge.org) and put it in
-`docker/.env`:
+Three steps. Everything comes from official signed releases: nothing is built
+from source and Docker is not required.
 
-```bash
-cp docker/.env.example docker/.env
-$EDITOR docker/.env       # set DELTA_FORGE_LICENSE_KEY=DF1.<your-key>
-```
+### 1. Install
 
-**The license key is required.** DeltaForge cannot bootstrap without
-one — the headless bootstrap fails and the bench container exits.
-Sign-up at the console is free, no credit card, takes under a minute,
-and the key activates online against the console on first container
-start.
+Downloads the DeltaForge platform + CLI and sets up the comparison engines.
 
-**2.** Bring up the stack and generate the fixtures (one-time per scale).
-The compose file lives under `docker/`, so run compose commands from
-there (the auto-loaded `docker-compose.override.yml` for Windows-host
-quirks is also in that directory):
+**macOS / Linux**
 
 ```bash
-cd docker
-docker compose up -d
-docker compose exec bench python data_gen/generate_tpch_delta.py    --scale 1
-docker compose exec bench python data_gen/generate_tpcds_delta.py   --scale 1
-docker compose exec bench python data_gen/generate_ssb_delta.py     --scale 1
-docker compose exec bench python data_gen/generate_job_delta.py
+curl -fsSL https://deltaforge.org/bench/install.sh | bash
 ```
 
-**3.** Run the bench:
+**Windows (PowerShell)**
+
+```powershell
+irm https://deltaforge.org/bench/install.ps1 | iex
+```
+
+The installer checks your machine first (OS, CPU, Python, disk, free port) and,
+if anything is missing, tells you exactly what and how to fix it. DeltaForge
+needs a license key to run the engine, so the installer asks for one (free at
+[console.deltaforge.org](https://console.deltaforge.org); takes a minute).
+
+### 2. Run
 
 ```bash
-docker compose exec bench python bench_runner.py \
-    --scale 1 --engines df,duckdb,spark-default,spark-tuned \
-    --workloads tpch_read_delta,tpcds_read_delta,ssb_read_delta,job_read_delta,synthetic_write_delta
+cd delta-forge-benchmarks
+./bench                 # quick SF=1 pass across all four engines
+./bench --scale 10      # the standard headline tier
 ```
 
-Each workload produces a `results/<timestamp>-<host>-<tag>/` directory.
-Generate a publish markdown for each with:
+On Windows use `.\bench.ps1` (e.g. `.\bench.ps1 -Scale 10`).
+
+`./bench` starts DeltaForge, waits until it is ready, runs the queries on every
+engine, and shuts it down when finished.
+
+### 3. Read the results
+
+Each run is saved under `results/<timestamp>-<host>-<tag>/` with per-query
+timings, host facts, and the exact engine versions.
+
+---
+
+**License.** DeltaForge needs a license key to run the engine, and the benchmark
+does not bundle one: you bring your own. It is free and takes a minute, no credit
+card, at [console.deltaforge.org](https://console.deltaforge.org). The installer
+prompts for it interactively; if you would rather not be prompted (or are piping
+the installer in), set it up front:
 
 ```bash
-docker compose exec bench python reports/build_published.py \
-    --results-dir results/<timestamp>-<tag> --bench tpch_read_delta \
-    --out published/tpch.md
+DELTA_FORGE_LICENSE_KEY=<your-key> curl -fsSL https://deltaforge.org/bench/install.sh | bash
 ```
 
-Full setup and reproducing instructions: [docs/setup.md](docs/setup.md).
+The key is written into `.env`; `./bench` refuses to start until one is present,
+and a key that the engine rejects (expired, wrong, or out of daily compute) stops
+the run early with a one-line message rather than failing query by query.
+
+**You need** a 64-bit Linux (x64), macOS (Apple Silicon or Intel), or Windows
+(x64) PC, Python 3.9+, and an internet connection for the one-time download.
+Bigger scales need more disk and RAM (SF=1 ≈ 1 GB). Full details:
+[docs/setup.md](docs/setup.md).
 
 ## Hardware (these numbers)
 
@@ -118,18 +133,19 @@ across hardware reasonably well, absolute milliseconds do not.**
 
 ```text
 .
+├── install.sh / install.ps1        # one-command setup (macOS+Linux / Windows)
+├── bench / bench.ps1               # launcher: boot platform → run → tear down
 ├── README.md                       # this file (at-a-glance results)
 ├── docs/
 │   ├── setup.md                    # install, run, scale tiers, hardware capture
-│   ├── image.md                    # docker image pull/build/publish
 │   └── design.md                   # design invariants, scope filter, future chapters
 ├── published/                      # marketing-linkable, per-bench markdown
 │   ├── index.md                    # TOC
 │   ├── methodology.md              # measurement contract
 │   ├── tpch.md, tpcds.md, ssb.md, job.md, writes.md
-├── bench_runner.py                 # main entry point
+├── bench_runner.py                 # the harness (invoked by ./bench)
 ├── engines/
-│   ├── df_engine.py                # DeltaForge: drives delta-forge-cli + server + worker
+│   ├── df_engine.py                # DeltaForge: drives deltaforge-cli against the platform
 │   ├── duckdb_engine.py            # DuckDB with the read-only delta extension
 │   ├── spark_default_engine.py     # Spark stock-defaults baseline
 │   ├── spark_tuned_engine.py       # Spark tuned (~40 keys, every key rationalized)
@@ -142,13 +158,13 @@ across hardware reasonably well, absolute milliseconds do not.**
 │   ├── synthetic_write_delta.py    # 10M-row CTAS from synthetic source
 │   └── tpch/, tpcds/, ssb/, job/ queries/*.sql
 ├── data_gen/                       # per-benchmark fixture generators
-├── reports/
-│   ├── build_published.py          # JSONL -> publish markdown
-│   ├── summarize_run.py            # console summary
-│   └── _headline.py                # quick cross-bench headline
-├── docker/                         # Dockerfile, compose stack, dropcaches sidecar
-└── scripts/                        # install.sh, run_smoke.sh, run_bench.sh
+└── reports/                        # JSONL -> summary + publish markdown
 ```
+
+The only DeltaForge artifacts the benchmark needs are the **platform** and the
+**CLI**, both pulled from the official signed release. The platform embeds the
+control plane and the compute node in a single process, so there is no separate
+worker, no Postgres, and no Docker to manage.
 
 ## About DeltaForge
 

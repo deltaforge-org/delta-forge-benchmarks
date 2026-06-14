@@ -63,10 +63,14 @@ _ROWS_PER_SCALE = {
     100:  1_000_000_000,
 }
 
-_DF_OUT     = "/workspace/data/synth_write/df/synth_fact"
-_SD_OUT     = "/workspace/data/synth_write/spark_default/synth_fact"
-_ST_OUT     = "/workspace/data/synth_write/spark_tuned/synth_fact"
-_DF_ZONE_ROOT = "/workspace/data/synth_write/df"
+# Write targets live under the runner-substituted {data_dir}, which resolves to
+# data/synth_write_sf{scale} inside the bench repo on the native host (no fixed
+# /workspace mount). bench_runner substitutes {data_dir} per step; each engine
+# writes to its own subdirectory so sequential engine runs never alias.
+_DF_OUT     = "{data_dir}/df/synth_fact"
+_SD_OUT     = "{data_dir}/spark_default/synth_fact"
+_ST_OUT     = "{data_dir}/spark_tuned/synth_fact"
+_DF_ZONE_ROOT = "{data_dir}/df"
 
 
 def _row_count(scale: int) -> int:
@@ -106,7 +110,7 @@ def _select_clause(varchar_type: str) -> str:
 
 def _df_setup() -> str:
     """One-shot zone creation so df's STORAGE_ROOT clamp respects the bench's
-    bind-mounted ext4 data dir instead of zone-relativizing the absolute path."""
+    native data dir instead of zone-relativizing the absolute path."""
     return (
         f"CREATE ZONE IF NOT EXISTS write_zone TYPE DELTA "
         f"STORAGE_ROOT '{_DF_ZONE_ROOT}'"

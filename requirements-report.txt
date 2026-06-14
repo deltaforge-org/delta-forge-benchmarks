@@ -1,0 +1,13 @@
+# Optional reporting / plotting dependencies.
+#
+# Nothing in the benchmark RUN path imports these; they are used only by some
+# of the post-run reporting helpers under reports/. install.sh installs them
+# best-effort and NEVER fails the install if a wheel is unavailable for your
+# Python: the benchmark and its JSON/markdown results generate fine without them.
+#
+# Floors, not exact pins, so a wheel exists on current Pythons.
+
+pandas>=2.2.3
+matplotlib>=3.9.2
+plotly>=5.24.1
+Jinja2>=3.1.4

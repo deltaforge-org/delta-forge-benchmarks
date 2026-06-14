@@ -9,14 +9,12 @@
 #     so run_smoke.sh / run_bench.sh inherit them.
 #
 # What it does NOT install:
-#   - Postgres. The driver-bench can either spin up the embedded postgres
-#     that ships with DeltaForge (the default, used by setup-host-stack.sh)
-#     or assume the operator pointed --control-url at a running stack.
-#     Either way, install.sh does not touch postgres.
-#   - DeltaForge engine binaries (server, worker, cli). Use
-#     scripts/stage-driver-bins.sh to stage the ODBC + ADBC .so files and
-#     ../scripts/stage-local-bins.sh (the parent benchmarks repo's helper)
-#     to stage the engine binaries.
+#   - The DeltaForge platform. driver-bench talks to a running DeltaForge
+#     platform (which embeds the control plane, compute, and DB). Install the
+#     parent suite (../install.sh) so setup-host-stack.sh can launch it, or
+#     point setup-host-stack.sh at an instance you already run.
+#   - The drivers under test. Use scripts/stage-driver-bins.sh to download the
+#     released ODBC + ADBC .so files.
 #
 # Tested distros: Ubuntu 22.04 / 24.04, Debian 12.
 #
@@ -190,23 +188,20 @@ cat <<EOF
 
 [install] done. Next steps:
 
-  # Stage the engine binaries (delta-forge-cli + server + worker) into the
-  # parent benchmarks repo's build/df-bins/. Either build them locally with
-  # cargo and run scripts/stage-local-bins.sh from the parent repo, or
-  # download the release artefacts from:
-  #   https://github.com/deltaforge-org/delta-forge/releases
-  #
-  # Stage the ODBC + ADBC drivers (the bench's subjects-under-test):
+  # 1. Download the released ODBC + ADBC drivers (the subjects under test):
   ./scripts/stage-driver-bins.sh
 
-  # Export your license key (free, no credit card):
-  #   https://console.deltaforge.org
-  export DELTA_FORGE_LICENSE_KEY=dfk_...
+  # 2. Connect to a DeltaForge platform + configure the zone and DSN. Uses an
+  #    instance already at http://127.0.0.1:3000, else launches the platform the
+  #    parent ../install.sh staged. A license is only needed if a fresh platform
+  #    must be launched (free, no credit card, at https://console.deltaforge.org):
+  # export DELTA_FORGE_LICENSE_KEY=DF1...
+  ./scripts/setup-host-stack.sh
 
-  # Smoke (~30s, 100k rows):
+  # 3. Smoke (~30s, 100k rows):
   ./scripts/run_smoke.sh
 
-  # Full bench (~2-5 min, 1M rows, both C++ and .NET, all driver modes):
+  # 4. Full bench (~2-5 min, 1M rows, both C++ and .NET, all driver modes):
   ./scripts/run_bench.sh
 
 Resolved paths have been written to .env; run_*.sh source it automatically.
