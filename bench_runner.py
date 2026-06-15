@@ -578,6 +578,31 @@ def cmd_run(args: argparse.Namespace) -> int:
         raw_dir.mkdir(parents=True, exist_ok=True)
         out_path.open("w", encoding="utf-8").close()
 
+        # One-time catalog registration. Registering a workload's Delta tables
+        # in the engine catalog is dataset setup tied to table creation, NOT
+        # per-query work, so it runs exactly ONCE per engine session here,
+        # before any measured step, and is never unregistered (the next
+        # clean-slate boot starts from an empty catalog). REGISTER DELTA TABLE
+        # is idempotent, so a same-session re-run is a no-op. Path-reading
+        # engines (DuckDB/Spark) carry no per_engine_sql on these steps, so
+        # resolve_step yields sql=None and they skip without touching a catalog.
+        for workload in workloads_to_run:
+            if (workload.applicable_engines is not None
+                    and engine_name not in workload.applicable_engines):
+                continue
+            for step in workload.catalog_setup_steps:
+                resolved = resolve_step(step, workload_data[workload.name],
+                                        engine_name, scale=args.scale)
+                if resolved.sql is None:
+                    continue
+                result = engine.run_step(resolved)
+                if result.error:
+                    print(f"  [catalog FAIL] {workload.name}/{step.id}: "
+                          f"{result.error}", file=sys.stderr)
+                else:
+                    print(f"  [catalog] {workload.name}: registered "
+                          f"{workload.name.split('_')[0]} tables in the catalog")
+
         records: list[dict] = []
         for workload in workloads_to_run:
             if (workload.applicable_engines is not None

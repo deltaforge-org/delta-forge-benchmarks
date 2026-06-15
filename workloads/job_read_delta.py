@@ -25,7 +25,7 @@ from pathlib import Path
 
 from engines.base import STEP_SQL_DDL, STEP_SQL_QUERY, WorkloadStep
 from .spec import Workload
-from ._df_catalog import df_register_setup, df_unregister_cleanup, df_qualify
+from ._df_catalog import df_register_setup, df_qualify
 
 QUERIES_DIR = Path(__file__).parent / "job" / "queries"
 
@@ -48,10 +48,6 @@ _SCHEMA = "rd"
 
 def _df_setup() -> str:
     return df_register_setup(_ZONE, _SCHEMA, _DELTA_ROOT, _JOB_TABLES)
-
-
-def _df_cleanup() -> str:
-    return df_unregister_cleanup(_ZONE, _SCHEMA, _JOB_TABLES)
 
 
 def _duckdb_setup() -> str:
@@ -92,19 +88,35 @@ def _df_open_preamble() -> str:
     )
 
 
+def _catalog_setup_steps() -> list[WorkloadStep]:
+    # df only: REGISTER DELTA TABLE is catalog-persistent, so it runs ONCE per
+    # session (bench_runner's catalog phase), tied to dataset creation, never
+    # per query and never torn down. sql=None means the path-reading engines
+    # (DuckDB/Spark) skip it; their session-local views live in _setup_steps.
+    return [
+        WorkloadStep(
+            id="register_delta_catalog",
+            kind=STEP_SQL_DDL,
+            sql=None,
+            per_engine_sql={"df": _df_setup()},
+            description="Register JOB Delta tables in the DeltaForge catalog (once)",
+            measured=False,
+        )
+    ]
+
+
 def _setup_steps() -> list[WorkloadStep]:
     return [
         WorkloadStep(
             id="register_delta_tables",
             kind=STEP_SQL_DDL,
-            sql=_spark_setup(),
+            sql=None,
             per_engine_sql={
-                "df": _df_setup(),
                 "duckdb": _duckdb_setup(),
                 "spark-default": _spark_setup(),
                 "spark-tuned": _spark_setup(),
             },
-            description="Per-engine JOB Delta mount",
+            description="Per-engine JOB Delta mount (session-local views)",
             measured=False,
         )
     ]
@@ -115,9 +127,8 @@ def _cleanup_steps() -> list[WorkloadStep]:
         WorkloadStep(
             id="unregister_delta_tables",
             kind=STEP_SQL_DDL,
-            sql=_spark_cleanup(),
+            sql=None,
             per_engine_sql={
-                "df": _df_cleanup(),
                 "duckdb": _duckdb_cleanup(),
                 "spark-default": _spark_cleanup(),
                 "spark-tuned": _spark_cleanup(),
@@ -148,6 +159,7 @@ def _load_query_steps() -> list[WorkloadStep]:
 WORKLOAD = Workload(
     name="job_read_delta",
     description="113 JOB queries against the IMDB snapshot as plain Delta tables.",
+    catalog_setup_steps=_catalog_setup_steps(),
     setup_steps=_setup_steps(),
     measured_steps=_load_query_steps(),
     cleanup_steps=_cleanup_steps(),

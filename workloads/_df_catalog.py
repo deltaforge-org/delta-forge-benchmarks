@@ -5,7 +5,12 @@ OPEN DELTA TABLE cannot carry across the per-query sessions. Instead REGISTER th
 existing Delta tables once (catalog-persistent, 3-part ``zone.schema.table``,
 idempotent), and reference them by their qualified name in each query. The query
 files are shared with DuckDB / Spark (bare names), so df's copy is qualified here.
-UNREGISTER on cleanup keeps the catalog free of residue (the data files are kept).
+
+Registration is a ONE-TIME catalog DDL tied to dataset creation, NOT per-query
+work: ``bench_runner`` runs it once per df session (its catalog phase), before
+any measured step, and never unregisters (the next clean-slate boot starts from
+an empty catalog, and ``REGISTER DELTA TABLE`` is idempotent on a same-session
+re-run). It therefore never appears in the measured query loop.
 
 Each benchmark uses its OWN zone (the zone's storage_root is the benchmark's
 ``_delta`` dir), so the zones never collide when several read workloads run in one
@@ -26,15 +31,6 @@ def df_register_setup(zone: str, schema: str, delta_root: str, tables: list[str]
     ]
     for t in tables:
         parts.append(f"REGISTER DELTA TABLE {zone}.{schema}.{t} LOCATION '{t}'")
-    return ";\n".join(parts)
-
-
-def df_unregister_cleanup(zone: str, schema: str, tables: list[str]) -> str:
-    """UNREGISTER each table (drops the catalog row, keeps the data files), then
-    drop the now-empty schema and zone, leaving a clean catalog after the run."""
-    parts = [f"UNREGISTER TABLE IF EXISTS {zone}.{schema}.{t}" for t in tables]
-    parts.append(f"DROP SCHEMA IF EXISTS {zone}.{schema}")
-    parts.append(f"DROP ZONE IF EXISTS {zone}")
     return ";\n".join(parts)
 
 

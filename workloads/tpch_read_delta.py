@@ -43,7 +43,7 @@ from pathlib import Path
 
 from engines.base import STEP_SQL_DDL, STEP_SQL_QUERY, WorkloadStep
 from .spec import Workload
-from ._df_catalog import df_register_setup, df_unregister_cleanup, df_qualify
+from ._df_catalog import df_register_setup, df_qualify
 
 QUERIES_DIR = Path(__file__).parent / "tpch" / "queries"
 
@@ -59,8 +59,10 @@ _TPCH_TABLES = [
 _DELTA_ROOT = "{data_dir}_delta"
 
 
-# df registers the Delta tables in the catalog (REGISTER), references them by
-# their qualified name, and UNREGISTERs on cleanup. See workloads/_df_catalog.py.
+# df registers the Delta tables in the catalog (REGISTER DELTA TABLE) ONCE per
+# session, then references them by their qualified name. Registration is a
+# one-time catalog DDL tied to dataset creation, not per-query work, so it lives
+# in catalog_setup_steps (no per-run register/unregister). See _df_catalog.py.
 _ZONE = "tpch"
 _SCHEMA = "rd"
 
@@ -69,10 +71,6 @@ _SCHEMA = "rd"
 
 def _df_setup() -> str:
     return df_register_setup(_ZONE, _SCHEMA, _DELTA_ROOT, _TPCH_TABLES)
-
-
-def _df_cleanup() -> str:
-    return df_unregister_cleanup(_ZONE, _SCHEMA, _TPCH_TABLES)
 
 
 def _duckdb_setup() -> str:
@@ -119,19 +117,35 @@ def _df_open_preamble() -> str:
 
 # ----- workload definition --------------------------------------------------
 
+def _catalog_setup_steps() -> list[WorkloadStep]:
+    # df only: REGISTER DELTA TABLE is catalog-persistent, so it runs ONCE per
+    # session (bench_runner's catalog phase), tied to dataset creation, never
+    # per query and never torn down. sql=None means the path-reading engines
+    # (DuckDB/Spark) skip it; their session-local views live in _setup_steps.
+    return [
+        WorkloadStep(
+            id="register_delta_catalog",
+            kind=STEP_SQL_DDL,
+            sql=None,
+            per_engine_sql={"df": _df_setup()},
+            description="Register TPC-H Delta tables in the DeltaForge catalog (once)",
+            measured=False,
+        )
+    ]
+
+
 def _setup_steps() -> list[WorkloadStep]:
     return [
         WorkloadStep(
             id="register_delta_tables",
             kind=STEP_SQL_DDL,
-            sql=_spark_setup(),
+            sql=None,
             per_engine_sql={
-                "df": _df_setup(),
                 "duckdb": _duckdb_setup(),
                 "spark-default": _spark_setup(),
                 "spark-tuned": _spark_setup(),
             },
-            description="Per-engine Delta mount (df: no-op; DuckDB: load delta+views; Spark: views)",
+            description="Per-engine Delta mount (DuckDB: load delta+views; Spark: views)",
             measured=False,
         )
     ]
@@ -142,9 +156,8 @@ def _cleanup_steps() -> list[WorkloadStep]:
         WorkloadStep(
             id="unregister_delta_tables",
             kind=STEP_SQL_DDL,
-            sql=_spark_cleanup(),
+            sql=None,
             per_engine_sql={
-                "df": _df_cleanup(),
                 "duckdb": _duckdb_cleanup(),
                 "spark-default": _spark_cleanup(),
                 "spark-tuned": _spark_cleanup(),
@@ -178,6 +191,7 @@ def _load_query_steps() -> list[WorkloadStep]:
 WORKLOAD = Workload(
     name="tpch_read_delta",
     description="22 canonical TPC-H read queries against plain Delta tables (no DV).",
+    catalog_setup_steps=_catalog_setup_steps(),
     setup_steps=_setup_steps(),
     measured_steps=_load_query_steps(),
     cleanup_steps=_cleanup_steps(),

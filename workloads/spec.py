@@ -32,6 +32,16 @@ class Workload:
     description: str
     """One-line human description for the report."""
 
+    catalog_setup_steps: list[WorkloadStep] = dataclasses.field(default_factory=list)
+    """Catalog registration run ONCE per engine session, before any other
+    step, and NEVER torn down. Registering a Delta table in the DeltaForge
+    catalog (REGISTER DELTA TABLE) is a one-time DDL tied to dataset creation,
+    not per-query work, so it must not sit in the measured loop or recur per
+    workload. The runner executes these once right after the engine starts.
+    Only engines whose name appears in a step's per_engine_sql do anything;
+    path-reading engines (DuckDB, Spark, whose views are session-local and
+    handled in setup_steps) get sql=None and skip."""
+
     setup_steps: list[WorkloadStep] = dataclasses.field(default_factory=list)
     """Run once per engine spin-up. Always executed; timings recorded but
     not part of the headline. Includes things like CREATE TABLE + COPY
