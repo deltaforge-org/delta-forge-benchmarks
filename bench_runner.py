@@ -393,13 +393,27 @@ def cmd_run(args: argparse.Namespace) -> int:
             if not wl.requires_input_data:
                 continue
             d = workload_data[wl.name]
-            if wl.data_subdir.startswith("tpch_sf") and not (
-                d.exists() and any(d.rglob("*.parquet"))
-            ):
-                print(f"[data] TPC-H SF={args.scale} not found at {d} — generating now...")
-                from data_gen.generate_tpch import generate as _gen_tpch
-                _gen_tpch(args.scale, d)
-                print(f"[data] TPC-H generation complete.")
+            if wl.data_subdir.startswith("tpch_sf"):
+                # 1. Ensure the TPC-H parquet fixture exists.
+                if not (d.exists() and any(d.rglob("*.parquet"))):
+                    print(f"[data] TPC-H SF={args.scale} parquet not found at {d} — generating now...")
+                    from data_gen.generate_tpch import generate as _gen_tpch
+                    _gen_tpch(args.scale, d)
+                    print(f"[data] TPC-H parquet generation complete.")
+                # 2. The *_read_delta workloads read Delta tables in the sibling
+                #    {data_dir}_delta directory; build them from the parquet (Spark)
+                #    if missing. Without this the OPEN DELTA TABLE targets an empty
+                #    table and every query fails with "No field named ...".
+                if "read_delta" in wl.name:
+                    delta_dir = Path(str(d) + "_delta")
+                    if not (delta_dir.exists() and any(delta_dir.glob("*"))):
+                        print(f"[data] TPC-H Delta tables not found at {delta_dir} — building from parquet via Spark...")
+                        subprocess.run(
+                            [sys.executable, str(REPO_ROOT / "data_gen" / "generate_tpch_delta.py"),
+                             "--scale", str(args.scale), "--data-dir", str(d.parent)],
+                            check=True,
+                        )
+                        print(f"[data] TPC-H Delta tables built.")
 
         # Final check: error on any read workload that still has no data.
         # Write workloads (requires_input_data=False) are exempt.
