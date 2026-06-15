@@ -1,0 +1,9 @@
+# Shell scripts and the container build files MUST use LF: CRLF breaks them in
+# the Linux benchmark container (bash rejects a `\r` in the shebang / commands).
+*.sh         text eol=lf
+bench        text eol=lf
+install.sh   text eol=lf
+Dockerfile   text eol=lf
+*.Dockerfile text eol=lf
+*.yml        text eol=lf
+*.yaml       text eol=lf

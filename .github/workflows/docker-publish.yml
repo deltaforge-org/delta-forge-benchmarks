@@ -1,0 +1,65 @@
+name: Publish benchmark container
+
+# Builds the prebuilt DeltaForge benchmark image (Linux/amd64 only) and pushes
+# it to GHCR, so users just `docker pull` + `docker run` with their license key.
+# Nothing is built from source: the image bakes in the SIGNED Linux release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      df_version:
+        description: Engine release version to bake in (must have signed linux-x64 assets)
+        required: true
+        default: "1.0.6"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/deltaforge-org/delta-forge-benchmarks
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            v="${GITHUB_REF_NAME#v}"
+          else
+            v="${{ github.event.inputs.df_version }}"
+          fi
+          echo "df_version=$v" >> "$GITHUB_OUTPUT"
+          echo "building image for DF_VERSION=$v"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (linux/amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64
+          build-args: |
+            DF_VERSION=${{ steps.ver.outputs.df_version }}
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.ver.outputs.df_version }}
+            ${{ env.IMAGE }}:latest
+          provenance: false

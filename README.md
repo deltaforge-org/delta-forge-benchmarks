@@ -51,12 +51,44 @@ sits this out (its `delta` extension is read-only).
 
 ## Run it
 
-One line sets it up on any supported OS; one line runs it. Everything comes from
-official **signed releases**: nothing is built from source, there is no first-run
-wizard, and Docker is not required. The platform boots fully **headless and
-unattended** (it bootstraps an embedded database and an embedded compute node and
-activates your license on first start), so the exact same commands work on a
-laptop, a CI runner, or a headless server.
+Two ways to run, both using only official **signed releases** (nothing is built
+from source). The **container is the simplest and most reproducible**: it is
+fully self-contained and hermetic, so it never touches the host's ports, catalog,
+or an existing DeltaForge install. The native install-script path runs the same
+signed binaries directly on the host.
+
+### Run with Docker (recommended)
+
+Pull the prebuilt image and run it with your license key. The image (Linux/amd64)
+bakes in the signed platform + CLI and runs the whole benchmark headless inside
+the container, so there is nothing to install on the host and nothing to clean up:
+
+```bash
+docker run --rm \
+  -e DELTA_FORGE_LICENSE_KEY=<your-key> \
+  -v "$PWD/results:/results" \
+  ghcr.io/deltaforge-org/delta-forge-benchmarks:latest
+```
+
+Any benchmark flags go after the image name:
+
+```bash
+docker run --rm -e DELTA_FORGE_LICENSE_KEY=<your-key> -v "$PWD/results:/results" \
+  ghcr.io/deltaforge-org/delta-forge-benchmarks:latest \
+  --scale 10 --engines df,duckdb --workloads tpch_read_delta
+```
+
+A free license key takes a minute at
+[console.deltaforge.org](https://console.deltaforge.org); results land in
+`./results`. To reuse one device activation across runs, mount a volume at
+`/root/.deltaforge`. The CPU-vs-GPU graph workload additionally needs
+`--gpus all` plus the NVIDIA Container Toolkit on the host.
+
+### Run natively (install script)
+
+Prefer not to use Docker? The same signed binaries install and run directly on
+the host. The platform boots fully **headless and unattended** (it bootstraps an
+embedded database and compute node and activates your license on first start).
 
 ### 1. Set up (one line)
 
