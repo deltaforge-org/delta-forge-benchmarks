@@ -1,0 +1,18 @@
+# Keep the build context lean: the image creates these at runtime.
+.git
+.venv
+.engine
+results
+logs
+data
+build
+spark_write_out
+duckdb_write_out
+bench_delta
+bench_delta_w
+scale_out
+**/__pycache__
+*.log
+.env
+docker/.env
+docker/bins
