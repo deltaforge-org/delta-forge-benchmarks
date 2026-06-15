@@ -47,13 +47,22 @@ log "Docker ready: $(docker version --format '{{.Server.Version}}' 2>/dev/null)"
 # 3. License (the image bundles none).
 [ -n "${DELTA_FORGE_LICENSE_KEY:-}" ] || die "Set DELTA_FORGE_LICENSE_KEY=<key> (free at https://console.deltaforge.org)."
 
-# 4. Pull the prebuilt image and run. Add --gpus all (NVIDIA Container Toolkit)
-#    via BENCH_DOCKER_ARGS for the GPU graph workload.
+# 4. Pull the prebuilt image and run. By DEFAULT the container uses all available
+#    host CPU and memory (no caps) for the fastest run. To reproduce the published
+#    numbers in their exact envelope, pin the cgroup like the published config:
+#    BENCH_CPUS=8 BENCH_MEMORY=16g ./docker/run.sh  (ratios travel across hardware;
+#    absolute ms do not). Add --gpus all (NVIDIA Container Toolkit) via
+#    BENCH_DOCKER_ARGS for the GPU graph workload.
+LIMITS=""
+[ -n "${BENCH_CPUS:-}" ]   && LIMITS="$LIMITS --cpus=$BENCH_CPUS"
+[ -n "${BENCH_MEMORY:-}" ] && LIMITS="$LIMITS --memory=$BENCH_MEMORY"
+
 log "pulling $IMAGE"
 docker pull "$IMAGE"
 mkdir -p "$RESULTS"
-log "running the benchmark (results -> $RESULTS)"
+log "running the benchmark (limits:${LIMITS:- all host resources}; results -> $RESULTS)"
 exec docker run --rm \
+    $LIMITS \
     ${BENCH_DOCKER_ARGS:-} \
     -e DELTA_FORGE_LICENSE_KEY \
     -v "$RESULTS:/results" \

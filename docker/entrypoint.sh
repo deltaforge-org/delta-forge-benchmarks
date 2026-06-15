@@ -50,4 +50,9 @@ if [ "$#" -eq 0 ]; then
     set -- --scale 1 --engines df,spark-default,spark-tuned --workloads synthetic_write_delta
 fi
 
-exec ./bench "$@"
+# Always disable the cold-cache purge in the container: it cannot drop OS caches
+# without --privileged and a dropcaches sidecar, and it kills the comparison
+# engines' own JVMs mid-run (Spark fails with "PythonUtils does not exist in the
+# JVM"). bench_runner labels runs purge_verified=False, which the report already
+# excludes from cold aggregates.
+exec ./bench "$@" --no-purge
