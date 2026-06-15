@@ -66,6 +66,12 @@ RUN set -eu; \
 COPY . /workspace
 WORKDIR /workspace
 
+# Normalize CRLF -> LF on the in-container shell scripts. A build context checked
+# out on Windows (git autocrlf) would otherwise carry a `\r` that breaks the
+# `#!/usr/bin/env bash` shebang ("bash\r: No such file or directory").
+RUN sed -i 's/\r$//' docker/entrypoint.sh bench install.sh docker/run.sh 2>/dev/null || true \
+    && chmod +x docker/entrypoint.sh bench docker/run.sh 2>/dev/null || true
+
 # Python venv with the comparison engines + reporting extras (best-effort).
 RUN python3 -m venv .venv \
     && .venv/bin/pip install --no-cache-dir --upgrade pip \
@@ -74,6 +80,17 @@ RUN python3 -m venv .venv \
 
 # bench_runner writes here when it exists; mount a volume at /results to keep them.
 RUN mkdir -p /results
+
+# PostgreSQL's initdb / postgres refuse to run as root, so the embedded database
+# (and the platform, which is a normal desktop app) must run as a non-root user.
+# Give that user ownership of the writable trees (the harness writes .env,
+# .engine, logs, data under /workspace; results under /results). The extracted
+# platform under /opt/deltaforge stays root-owned but world-readable/executable.
+RUN useradd -m -u 10001 -s /bin/bash bench \
+    && chown -R bench:bench /workspace /results /opt/deltaforge \
+    && chmod -R a+rX /opt/deltaforge/platform
+USER bench
+ENV HOME=/home/bench
 
 ENV DF_PLATFORM_BIN=/opt/deltaforge/platform/AppRun \
     DF_CLI_PATH=/usr/local/bin/deltaforge-cli
