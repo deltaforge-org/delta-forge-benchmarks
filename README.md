@@ -59,9 +59,19 @@ signed binaries directly on the host.
 
 ### Run with Docker (recommended)
 
-Pull the prebuilt image and run it with your license key. The image (Linux/amd64)
-bakes in the signed platform + CLI and runs the whole benchmark headless inside
-the container, so there is nothing to install on the host and nothing to clean up:
+Turnkey on a Linux host: the script **installs Docker if it is missing, starts it
+if it is stopped**, pulls the prebuilt image, and runs the benchmark:
+
+```bash
+git clone https://github.com/deltaforge-org/delta-forge-benchmarks
+cd delta-forge-benchmarks
+DELTA_FORGE_LICENSE_KEY=<your-key> ./docker/run.sh
+```
+
+Already have Docker? Pull the prebuilt image (Linux/amd64) and run it directly.
+It bakes in the signed platform + CLI and runs the whole benchmark headless
+inside the container, so there is nothing to install on the host and nothing to
+clean up:
 
 ```bash
 docker run --rm \
