@@ -360,7 +360,11 @@ ok "license OK — platform is serving queries"
 
 # ----- run the harness -------------------------------------------------------
 
-if [ "$#" -eq 0 ]; then
+# With no args on a terminal, bench_runner shows an interactive menu (pick the
+# benchmark to gate the run, the engines, scale, depth). Only inject the full
+# default suite when there is NO terminal to ask (CI, piped, nohup), so an
+# unattended run stays fully automated and a human gets the menu.
+if [ "$#" -eq 0 ] && [ ! -t 0 ]; then
     set -- --scale 1 \
         --engines df,duckdb,spark-default,spark-tuned \
         --workloads tpch_read_delta,tpcds_read_delta,ssb_read_delta,job_read_delta,synthetic_write_delta

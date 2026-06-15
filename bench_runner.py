@@ -377,6 +377,143 @@ def _ensure_delta_fixtures(name: str, scale: int, data_root: Path, delta_dir: Pa
 
 
 # ---------------------------------------------------------------------------
+# Interactive front-end + auto-report
+# ---------------------------------------------------------------------------
+
+# Engine presets offered in the menu. df is always included: it is the engine
+# under test. The others are the comparison baselines.
+_ENGINE_PRESETS = [
+    ("df",                                      "DeltaForge only (fastest setup, no Spark JVM)"),
+    ("df,duckdb",                               "DeltaForge + DuckDB"),
+    ("df,duckdb,spark-default,spark-tuned",     "DeltaForge + DuckDB + Spark (full comparison)"),
+]
+
+# Non-interactive fallbacks when a flag is omitted and there is no terminal to
+# ask. The full suite mirrors the `bench` launcher's historical default.
+_DEFAULT_ENGINES = "df,duckdb,spark-default,spark-tuned"
+_DEFAULT_WORKLOADS = ("tpch_read_delta,tpcds_read_delta,ssb_read_delta,"
+                      "job_read_delta,synthetic_write_delta")
+
+
+def _ask(prompt: str, default: str) -> str:
+    """Prompt on stderr (so it never pollutes captured stdout / a results pipe)
+    and read one line from stdin. Empty input or EOF yields the default."""
+    sys.stderr.write(prompt)
+    sys.stderr.flush()
+    try:
+        line = sys.stdin.readline()
+    except (EOFError, KeyboardInterrupt):
+        sys.stderr.write("\n")
+        return default
+    if line == "":            # EOF
+        sys.stderr.write("\n")
+        return default
+    line = line.strip()
+    return line if line else default
+
+
+def run_menu(available: dict) -> dict:
+    """Ask the operator which benchmark(s), which engines, scale, and run depth,
+    and return the resolved overrides. Every benchmark is gated: a single pick
+    runs only that one. Robust against bad input (re-prompts, falls back to a
+    sensible default) because the setup flow IS the product."""
+    names = list(available.keys())
+
+    sys.stderr.write("\n" + "=" * 60 + "\n")
+    sys.stderr.write(" DeltaForge benchmark - choose what to run\n")
+    sys.stderr.write("=" * 60 + "\n")
+    sys.stderr.write("\n Benchmarks (pick one to gate the run, or 'a' for all):\n")
+    for i, n in enumerate(names, 1):
+        desc = getattr(available[n], "description", "")
+        sys.stderr.write(f"   {i}) {n:24} {desc}\n")
+    sys.stderr.write(f"   a) all ({len(names)})\n")
+
+    # Benchmark selection: a number, a comma-list of numbers, or 'a'.
+    workloads = names[0]
+    for _ in range(3):
+        raw = _ask(f"\n Select benchmark [1-{len(names)}, comma-list, or 'a'; default 1]: ", "1")
+        if raw.lower() in ("a", "all"):
+            workloads = ",".join(names); break
+        try:
+            picks = [int(x) for x in raw.replace(" ", "").split(",") if x]
+            if picks and all(1 <= p <= len(names) for p in picks):
+                workloads = ",".join(names[p - 1] for p in picks); break
+        except ValueError:
+            pass
+        sys.stderr.write(f"   ! not a valid choice: {raw!r}\n")
+
+    # Engine preset.
+    sys.stderr.write("\n Engines:\n")
+    for i, (combo, desc) in enumerate(_ENGINE_PRESETS, 1):
+        sys.stderr.write(f"   {i}) {desc}\n")
+    engines = _ENGINE_PRESETS[-1][0]
+    for _ in range(3):
+        raw = _ask(f" Select engines [1-{len(_ENGINE_PRESETS)}; default {len(_ENGINE_PRESETS)}]: ",
+                   str(len(_ENGINE_PRESETS)))
+        try:
+            idx = int(raw)
+            if 1 <= idx <= len(_ENGINE_PRESETS):
+                engines = _ENGINE_PRESETS[idx - 1][0]; break
+        except ValueError:
+            pass
+        sys.stderr.write(f"   ! not a valid choice: {raw!r}\n")
+
+    # Scale factor.
+    scale = 1
+    for _ in range(3):
+        raw = _ask(" Scale factor (1 = ~1 GB; bigger needs much more disk) [default 1]: ", "1")
+        try:
+            v = int(raw)
+            if v >= 1:
+                scale = v; break
+        except ValueError:
+            pass
+        sys.stderr.write(f"   ! must be a positive integer: {raw!r}\n")
+
+    # Run depth.
+    sys.stderr.write("\n Run depth:\n")
+    sys.stderr.write("   1) quick  (1 cold + 1 warm per query)\n")
+    sys.stderr.write("   2) full   (each workload's declared default, typically 1 cold + 9 warm)\n")
+    cold_runs, warm_runs = 1, 1
+    raw = _ask(" Select depth [1-2; default 1]: ", "1")
+    if raw.strip() == "2":
+        cold_runs, warm_runs = None, None  # None = keep each workload's declared default
+
+    sys.stderr.write("\n" + "=" * 60 + "\n")
+    sys.stderr.write(f" Running: --workloads {workloads} --engines {engines} --scale {scale}"
+                     + ("  (quick)" if warm_runs == 1 else "  (full)") + "\n")
+    sys.stderr.write("=" * 60 + "\n\n")
+    sys.stderr.flush()
+    return {"workloads": workloads, "engines": engines, "scale": scale,
+            "cold_runs": cold_runs, "warm_runs": warm_runs}
+
+
+def _emit_report(out_dir: Path) -> None:
+    """Render the human-readable report (timings + the cross-engine correctness
+    verdict) from the raw records, so every run ends with a studyable proof, not
+    just jsonl. Best-effort: a report failure never fails the benchmark, but the
+    correctness verdict is surfaced prominently when it succeeds."""
+    gen = REPO_ROOT / "reports" / "generate_report.py"
+    if not gen.exists():
+        return
+    print("\n" + "=" * 60)
+    print(" Generating run report + cross-engine correctness verdict")
+    print("=" * 60)
+    try:
+        rc = subprocess.run([sys.executable, str(gen), "--results-dir", str(out_dir)],
+                            check=False).returncode
+    except Exception as e:  # noqa: BLE001 - report is auxiliary; never abort the run
+        print(f"  (report generation skipped: {e})", file=sys.stderr)
+        return
+    report_md = out_dir / "report.md"
+    if report_md.exists():
+        print(f"\n Full report:  {report_md}")
+        print(f" Summary CSV:  {out_dir / 'summary.csv'}")
+    if rc != 0:
+        print("  (report generator returned non-zero; see output above)", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -385,6 +522,25 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     # Resolve workloads.
     available_workloads = discover(WORKLOADS_DIR)
+
+    # Interactive front-end: when run on a terminal with neither --workloads nor
+    # --engines given, ask. Otherwise (flags given, --non-interactive, or no TTY
+    # such as CI / plain `docker run`) fill any omitted selection from defaults.
+    interactive = (sys.stdin.isatty() and not args.non_interactive
+                   and args.workloads is None and args.engines is None
+                   and not args.dry_run)
+    if interactive:
+        sel = run_menu(available_workloads)
+        args.workloads = sel["workloads"]
+        args.engines = sel["engines"]
+        args.scale = sel["scale"]
+        args.cold_runs = sel["cold_runs"]
+        args.warm_runs = sel["warm_runs"]
+    else:
+        if args.workloads is None:
+            args.workloads = _DEFAULT_WORKLOADS
+        if args.engines is None:
+            args.engines = _DEFAULT_ENGINES
     if args.workloads:
         wanted = [w.strip() for w in args.workloads.split(",") if w.strip()]
         missing = [w for w in wanted if w not in available_workloads]
@@ -636,6 +792,12 @@ def cmd_run(args: argparse.Namespace) -> int:
         json.dump(manifest, f, indent=2, sort_keys=True)
         f.write("\n")
     print(f"\nDone. Results: {out_dir}")
+
+    # Always finish by rendering the studyable proof: per-query timings plus the
+    # cross-engine correctness verdict (df results vs DuckDB/Spark). Skipped for
+    # a dry run (no records) since there is nothing to report.
+    if not args.dry_run:
+        _emit_report(out_dir)
     return 0
 
 
@@ -647,10 +809,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--scale", type=int,
                    default=int(os.environ.get("BENCH_SCALE_FACTOR", "1")),
                    help="TPC-H scale factor (1 = ~1 GB, 10 = ~10 GB).")
-    p.add_argument("--engines", default="df,spark-default",
-                   help="Comma-separated engine names. Default: df,spark-default.")
-    p.add_argument("--workloads", default="tpch_read,bulk_load,crud",
-                   help="Comma-separated workload names. Default: tpch_read,bulk_load,crud.")
+    p.add_argument("--engines", default=None,
+                   help="Comma-separated engine names. Omit on a terminal to be "
+                        "asked interactively; omit non-interactively for the "
+                        "full set (df,duckdb,spark-default,spark-tuned).")
+    p.add_argument("--workloads", default=None,
+                   help="Comma-separated workload names (the gate: pass one to run "
+                        "just that benchmark). Omit on a terminal to pick from a "
+                        "menu; omit non-interactively to run the full suite.")
+    p.add_argument("--non-interactive", action="store_true",
+                   help="Never prompt; use flags (or defaults) as given. Implied "
+                        "automatically when stdin is not a terminal (CI, piped, "
+                        "plain `docker run`).")
     # Inside the container the results volume is mounted at /results.
     # On the host, fall back to the repo's results/ directory.
     _default_results = "/results" if Path("/results").exists() else str(DEFAULT_RESULTS_DIR)

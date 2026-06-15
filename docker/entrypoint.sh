@@ -60,11 +60,15 @@ DELTA_FORGE_ENGINEER_PASSWORD=Benchmark_Engineer1
 DELTA_FORGE_BIND_ADDR=127.0.0.1:3000
 EOF
 
-# Default run: the synthetic write headline across the applicable engines (fully
-# self-contained, no external data staging). Override by passing any
-# bench_runner.py flags, e.g.:
-#   docker run ... ghcr.io/deltaforge-org/delta-forge-benchmarks --scale 10 --engines df,duckdb --workloads tpch_read_delta
-if [ "$#" -eq 0 ]; then
+# Three ways to drive the run:
+#   1. Interactive menu (pick ONE benchmark to gate the run, engines, scale):
+#        docker run -it -e DELTA_FORGE_LICENSE_KEY=<key> ghcr.io/deltaforge-org/delta-forge-benchmarks
+#   2. Scripted / gated (run just one benchmark, fully automated):
+#        docker run --rm -e DELTA_FORGE_LICENSE_KEY=<key> ghcr.io/.../delta-forge-benchmarks --workloads tpch_read_delta --engines df,duckdb
+#   3. Unattended default (no terminal, no args): the self-contained synthetic
+#      write headline. bench_runner picks the menu only on a TTY; with no TTY it
+#      runs exactly these flags, so plain `docker run` stays fully automated.
+if [ "$#" -eq 0 ] && [ ! -t 0 ]; then
     set -- --scale 1 --engines df,spark-default,spark-tuned --workloads synthetic_write_delta
 fi
 

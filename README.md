@@ -80,13 +80,28 @@ docker run --rm \
   ghcr.io/deltaforge-org/delta-forge-benchmarks:latest
 ```
 
-Any benchmark flags go after the image name:
+Prefer to be asked? Add `-it` for an interactive menu that lets you pick **one**
+benchmark to run (TPC-H, TPC-DS, SSB, JOB, or the synthetic write), the engines,
+the scale, and the run depth:
+
+```bash
+docker run --rm -it -e DELTA_FORGE_LICENSE_KEY=<your-key> -v "$PWD/results:/results" \
+  ghcr.io/deltaforge-org/delta-forge-benchmarks:latest
+```
+
+Or gate it directly by passing flags after the image name (fully automated, no
+prompts). Every benchmark is independently selectable with `--workloads`:
 
 ```bash
 docker run --rm -e DELTA_FORGE_LICENSE_KEY=<your-key> -v "$PWD/results:/results" \
   ghcr.io/deltaforge-org/delta-forge-benchmarks:latest \
   --scale 10 --engines df,duckdb --workloads tpch_read_delta
 ```
+
+Every run ends by writing a `report.md` (per-query timings) and a cross-engine
+**correctness verdict** into the results dir: the same query's result on
+DeltaForge, DuckDB, and Spark is hashed and compared, so you can see for yourself
+that the answers are identical, not just that the timings differ.
 
 A free license key takes a minute at
 [console.deltaforge.org](https://console.deltaforge.org); results land in
@@ -131,22 +146,30 @@ on any OS.
 
 ```bash
 cd delta-forge-benchmarks
-./bench                 # quick SF=1 pass across all four engines
-./bench --scale 10      # the standard headline tier
+./bench                                  # on a terminal: interactive menu (pick one benchmark + engines + scale)
+./bench --workloads tpch_read_delta      # gated: run just TPC-H, fully automated
+./bench --scale 10                       # all four suites + the writes at SF=10
 ```
 
-On Windows use `.\bench.ps1` (e.g. `.\bench.ps1 -Scale 10`); it boots the
-platform headless exactly like `./bench` does on macOS / Linux, with no window
-and no prompts.
+Run `./bench` on a terminal with no flags and it asks what to run (which
+benchmark, which engines, the scale, and quick-vs-full depth), then executes
+end to end. Pass any flag (or run without a terminal, as in CI) and it skips the
+menu and runs exactly what you asked. On Windows use `.\bench.ps1`.
 
 `./bench` starts DeltaForge headless, waits until it is ready, runs the queries
-on every engine, and shuts the platform (and its embedded database) down when
-finished. Once a license key is in `.env`, no step asks you anything.
+on every engine, renders the report, and shuts the platform (and its embedded
+database) down when finished.
 
 ### 3. Read the results
 
-Each run is saved under `results/<timestamp>-<host>-<tag>/` with per-query
-timings, host facts, and the exact engine versions.
+Each run is saved under `results/<timestamp>-<host>-<tag>/`:
+
+- `report.md` -- per-query cold/warm timings per engine, plus the cross-engine
+  **correctness verdict** (the same query's result on DeltaForge, DuckDB, and
+  Spark is hashed and compared; the report states plainly whether they agree).
+- `summary.csv` -- one row per (workload, engine, query) for your own analysis.
+- `manifest.json` + `raw/*.jsonl` -- host facts, engine versions, and every
+  individual measurement, so nothing is hidden behind the headline number.
 
 ### Ports it uses
 
