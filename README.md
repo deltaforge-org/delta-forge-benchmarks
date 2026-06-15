@@ -51,12 +51,16 @@ sits this out (its `delta` extension is read-only).
 
 ## Run it
 
-Three steps. Everything comes from official signed releases: nothing is built
-from source and Docker is not required.
+One line sets it up on any supported OS; one line runs it. Everything comes from
+official **signed releases**: nothing is built from source, there is no first-run
+wizard, and Docker is not required. The platform boots fully **headless and
+unattended** (it bootstraps an embedded database and an embedded compute node and
+activates your license on first start), so the exact same commands work on a
+laptop, a CI runner, or a headless server.
 
-### 1. Install
+### 1. Set up (one line)
 
-Downloads the DeltaForge platform + CLI and sets up the comparison engines.
+Downloads the signed DeltaForge platform + CLI and sets up the comparison engines.
 
 **macOS / Linux**
 
@@ -75,6 +79,12 @@ if anything is missing, tells you exactly what and how to fix it. DeltaForge
 needs a license key to run the engine, so the installer asks for one (free at
 [console.deltaforge.org](https://console.deltaforge.org); takes a minute).
 
+The platform it installs is the official signed `deltaforge` release, the same
+binary the desktop app ships. The benchmark boots it with no browser wizard and
+no manual activation: an embedded PostgreSQL and an embedded compute node come up
+in-process and the device activates online on first start. Nothing is compiled,
+on any OS.
+
 ### 2. Run
 
 ```bash
@@ -83,10 +93,13 @@ cd delta-forge-benchmarks
 ./bench --scale 10      # the standard headline tier
 ```
 
-On Windows use `.\bench.ps1` (e.g. `.\bench.ps1 -Scale 10`).
+On Windows use `.\bench.ps1` (e.g. `.\bench.ps1 -Scale 10`); it boots the
+platform headless exactly like `./bench` does on macOS / Linux, with no window
+and no prompts.
 
-`./bench` starts DeltaForge, waits until it is ready, runs the queries on every
-engine, and shuts it down when finished.
+`./bench` starts DeltaForge headless, waits until it is ready, runs the queries
+on every engine, and shuts the platform (and its embedded database) down when
+finished. Once a license key is in `.env`, no step asks you anything.
 
 ### 3. Read the results
 
