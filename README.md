@@ -106,6 +106,23 @@ finished. Once a license key is in `.env`, no step asks you anything.
 Each run is saved under `results/<timestamp>-<host>-<tag>/` with per-query
 timings, host facts, and the exact engine versions.
 
+### Ports it uses
+
+The benchmark runs entirely on loopback and needs two TCP ports free on the host:
+
+| Port | Used for | Required | Notes |
+| --- | --- | --- | --- |
+| `3000` | control-plane HTTP API (the CLI talks to this) | yes | relocate with `DELTA_FORGE_BIND_ADDR` + `DF_CONTROL_URL` in `.env` if it is taken |
+| `3031` | embedded compute node | yes | advertised on `127.0.0.1` |
+
+It also starts its **own** embedded PostgreSQL on the first free port from `5442`
+upward (`DELTAFORGE_PG_PORT`), so it never touches a PostgreSQL already on the
+default `5432`. The most common conflict is a DeltaForge desktop app already
+holding `3000`/`3031`: the desktop platform is single-instance per user, so stop
+it (or move the benchmark to free ports) before running. The installer's
+pre-flight check flags `3000` when it is occupied, and `./bench` / `.\bench.ps1`
+refuse to start rather than collide.
+
 ---
 
 **License.** DeltaForge needs a license key to run the engine, and the benchmark
