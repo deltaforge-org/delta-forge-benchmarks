@@ -318,6 +318,47 @@ download_and_verify() {
     ok "verified ${asset}"
 }
 
+# Prefer the x86-64-v3 (AVX2/BMI2) platform build when the release ships one and
+# this host can actually run it. The v3 build's embedded compute is the faster
+# engine, but a v3 binary SIGILLs on a pre-Haswell / AVX2-masked CPU, so the
+# choice is gated on BOTH the release carrying a v3 asset (its line is in the
+# already-downloaded SHA256SUMS) AND /proc/cpuinfo advertising the v3 feature
+# floor. Falls back to the generic build otherwise. Override with
+# DF_CPU_TIER=generic|v3|auto (default auto). Linux only; tiers are an x86 concept.
+if [ "$OS" = "linux" ]; then
+    DF_CPU_TIER="${DF_CPU_TIER:-auto}"
+    V3_ASSET="deltaforge-${DF_VERSION}-linux-x64-v3.AppImage"
+    v3_published=0
+    grep -qE "[ *]${V3_ASSET}\$" "$SUMS_FILE" && v3_published=1
+    host_has_v3=0
+    if grep -qw avx2 /proc/cpuinfo 2>/dev/null \
+       && grep -qw bmi2 /proc/cpuinfo 2>/dev/null \
+       && grep -qw fma  /proc/cpuinfo 2>/dev/null; then
+        host_has_v3=1
+    fi
+    case "$DF_CPU_TIER" in
+        v3)
+            if [ "$v3_published" = 1 ]; then
+                PLATFORM_ASSET="$V3_ASSET"
+                [ "$host_has_v3" = 1 ] || warn "DF_CPU_TIER=v3 forced, but this CPU lacks AVX2/BMI2; the v3 build may SIGILL here."
+                ok "platform tier: x86-64-v3 (forced)"
+            else
+                warn "DF_CPU_TIER=v3 requested, but ${V3_ASSET} is not in release v${DF_VERSION}; using the generic build."
+            fi ;;
+        generic)
+            info "platform tier: generic (forced via DF_CPU_TIER=generic)" ;;
+        *)  # auto: v3 only when published AND runnable here
+            if [ "$v3_published" = 1 ] && [ "$host_has_v3" = 1 ]; then
+                PLATFORM_ASSET="$V3_ASSET"
+                ok "platform tier: x86-64-v3 (AVX2 build)"
+            elif [ "$v3_published" = 1 ]; then
+                info "platform tier: generic (this CPU lacks AVX2/BMI2; the v3 build would not run here)"
+            else
+                info "platform tier: generic (release v${DF_VERSION} ships no v3 build)"
+            fi ;;
+    esac
+fi
+
 info "platform: ${PLATFORM_ASSET}"
 download_and_verify "$PLATFORM_ASSET"
 info "cli:      ${CLI_ASSET}"

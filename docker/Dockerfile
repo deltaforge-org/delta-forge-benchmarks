@@ -21,6 +21,12 @@ FROM ubuntu:24.04
 
 ARG DF_VERSION=1.0.6
 ARG DF_REPO=deltaforge-org/delta-forge
+# CPU tier for the baked platform AppImage. `v3` (default) bakes the AVX2/BMI2
+# build when the release ships one, else falls back to generic. The v3 build's
+# embedded compute is the faster engine but requires a Haswell+ (AVX2) host at
+# RUN time; the entrypoint guards against a non-AVX2 host so it fails clearly
+# instead of SIGILL. Pass --build-arg DF_CPU_TIER=generic for the portable build.
+ARG DF_CPU_TIER=v3
 ENV DEBIAN_FRONTEND=noninteractive
 ENV DF_VERSION=${DF_VERSION}
 
@@ -45,17 +51,24 @@ WORKDIR /opt/deltaforge
 # Download + SHA256-verify + extract the SIGNED platform AppImage and CLI. The
 # AppImage is extracted (--appimage-extract) rather than run via FUSE, so the
 # container needs no FUSE device and no privileged mode.
+ARG DF_CPU_TIER
 RUN set -eu; \
     base="https://github.com/${DF_REPO}/releases/download/v${DF_VERSION}"; \
-    app="deltaforge-${DF_VERSION}-linux-x64.AppImage"; \
+    curl -fsSL -o SHA256SUMS "$base/SHA256SUMS"; \
+    app="deltaforge-${DF_VERSION}-linux-x64.AppImage"; tier="generic"; \
+    v3="deltaforge-${DF_VERSION}-linux-x64-v3.AppImage"; \
+    if [ "${DF_CPU_TIER:-v3}" = "v3" ] && grep -qE "[ *]${v3}\$" SHA256SUMS; then \
+        app="$v3"; tier="v3"; \
+    fi; \
+    echo "platform tier: ${tier} (${app})"; \
     cli="deltaforge-cli-${DF_VERSION}-linux-x64.tar.gz"; \
     curl -fsSL -o "$app" "$base/$app"; \
     curl -fsSL -o "$cli" "$base/$cli"; \
-    curl -fsSL -o SHA256SUMS "$base/SHA256SUMS"; \
     sha256sum --ignore-missing -c SHA256SUMS; \
     chmod +x "$app"; \
     "./$app" --appimage-extract >/dev/null; \
     mv squashfs-root platform; \
+    printf '%s\n' "$tier" > /opt/deltaforge/CPU_TIER; \
     mkdir -p cli-extract && tar -xzf "$cli" -C cli-extract; \
     ln -s "$(find /opt/deltaforge/cli-extract -type f -name 'deltaforge-cli' | head -1)" /usr/local/bin/deltaforge-cli; \
     rm -f "$app" "$cli" SHA256SUMS

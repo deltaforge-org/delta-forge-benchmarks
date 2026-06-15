@@ -9,6 +9,24 @@
 set -euo pipefail
 cd /workspace
 
+# Guard a baked x86-64-v3 (AVX2) platform build against a non-AVX2 host. The
+# in-container /proc/cpuinfo reflects the host CPU, so this catches the
+# incompatibility up front and fails with guidance instead of letting the
+# engine die with an opaque SIGILL the moment its embedded compute starts.
+if [ "$(cat /opt/deltaforge/CPU_TIER 2>/dev/null || echo generic)" = "v3" ] \
+   && ! grep -qw avx2 /proc/cpuinfo 2>/dev/null; then
+    cat >&2 <<'MSG'
+[bench] This image bakes the x86-64-v3 (AVX2) platform build, but this host's CPU
+does not advertise AVX2, so the engine would crash with SIGILL.
+
+  Pull or build the portable (generic) image instead:
+
+    docker build -f docker/Dockerfile --build-arg DF_CPU_TIER=generic -t deltaforge-benchmark .
+
+MSG
+    exit 3
+fi
+
 if [ -z "${DELTA_FORGE_LICENSE_KEY:-}" ]; then
     cat >&2 <<'MSG'
 [bench] DeltaForge needs a license key to run the engine, and this image bundles none.
