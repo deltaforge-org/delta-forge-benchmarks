@@ -261,6 +261,12 @@ def run_workload(engine, workload, data_dir: Path, scale: int, raw_dir: Path,
     setup_ms_total = 0.0
     for step in workload.setup_steps:
         resolved = resolve_step(step, data_dir, engine.name, scale)
+        # A step with no SQL and no Python fn for THIS engine is not applicable
+        # to it (e.g. df's per-workload Delta-mount step is empty because df
+        # registers in the catalog phase instead). Skip it rather than handing
+        # the adapter an empty SQL_DDL, which would error and abort the workload.
+        if resolved.sql is None and resolved.fn is None:
+            continue
         result = engine.run_step(resolved)
         setup_ms_total += result.wall_ms
         if result.exit_code != 0:
@@ -312,6 +318,8 @@ def run_workload(engine, workload, data_dir: Path, scale: int, raw_dir: Path,
     cleanup_ms_total = 0.0
     for step in workload.cleanup_steps:
         resolved = resolve_step(step, data_dir, engine.name, scale)
+        if resolved.sql is None and resolved.fn is None:
+            continue  # not applicable to this engine (see setup loop)
         result = engine.run_step(resolved)
         cleanup_ms_total += result.wall_ms
     print(f"  [cleanup] done in {cleanup_ms_total/1000.0:.2f}s")
