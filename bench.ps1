@@ -57,6 +57,27 @@ function Looks-Like-License-Limit($text) {
     return ($text -match '(?i)licen|quota|exhaust|dfcu|compute unit|usage cap|limit exceeded|over.?limit|rate.?limit|payment required|\b4(02|29)\b')
 }
 
+# Distinguish "key installed but NOT ACTIVATED" (HTTP 403 NOT_ACTIVATED) from a
+# missing / rejected / exhausted key. The remedy is different: activate the
+# device, do not fetch a new key. Checked BEFORE Looks-Like-License-Limit, which
+# would otherwise swallow this (the text contains "licen").
+function Looks-Like-Not-Activated($text) {
+    return ($text -match '(?i)NOT_ACTIVATED|not activated|activate your license|license not activated')
+}
+
+# Guidance for the not-activated case.
+function Activation-Help {
+    Write-Host "`n[bench] The license could not be activated on this machine." -ForegroundColor Yellow
+    Write-Host "  The benchmark auto-activates this device on boot, but the engine still"
+    Write-Host "  reports the license as not activated. Likely causes:"
+    Write-Host "    - No internet: activation is an online exchange with console.deltaforge.org."
+    Write-Host "    - All device slots in use: a single-node license can be active on only ONE"
+    Write-Host "      machine at a time. Deactivate it elsewhere, or use a license with more nodes."
+    Write-Host "    - The key is expired, revoked, or wrong.`n"
+    Write-Host "  Check your connection and the platform log, then re-run .\bench.ps1."
+    Write-Host "  Manage your license at https://console.deltaforge.org"
+}
+
 # ----- environment -----------------------------------------------------------
 
 if (-not (Test-Path '.env')) { Fail "no .env found. Run .\install.ps1 first." }
@@ -81,6 +102,52 @@ if (-not $env:DELTA_FORGE_LICENSE_KEY) {
          @("DeltaForge cannot run the engine without one; see the steps above.")
 }
 
+# ----- headless, unattended platform environment -----------------------------
+# Mirror the Linux `bench` contract so a fresh Windows box runs with no human in
+# the loop: force HEADLESS bootstrap against the platform's built-in embedded
+# PostgreSQL (no browser wizard), auto-activate the device, advertise the
+# embedded compute node on loopback, and give the embedded PostgreSQL a free
+# port so it never collides with a DeltaForge already on :5432. These are all
+# read by the released platform binary from the environment; no rebuild, no
+# source. Against a platform too old to support DELTA_FORGE_HEADLESS the boot
+# falls back to the wizard and this run fails fast with a startup/license error
+# instead of hanging on a window.
+$env:DELTA_FORGE_HEADLESS = '1'
+# Auto-activate this device on first boot so the benchmark runs on a machine
+# that has never opened the DeltaForge GUI. Device-bound + idempotent: it takes
+# the machine's ONE shared activation slot, or reuses an existing activation
+# (GUI or a prior run) and consumes no extra slot. A single-node license can be
+# active on only one machine at a time.
+if (-not $env:DELTA_FORGE_ACTIVATE_ON_BOOT) { $env:DELTA_FORGE_ACTIVATE_ON_BOOT = '1' }
+if (-not $env:DELTA_FORGE_SKIP_DEMO_USER)   { $env:DELTA_FORGE_SKIP_DEMO_USER   = 'false' }
+# Advertise the embedded compute node on loopback. It binds 0.0.0.0:3031 and
+# would otherwise advertise the host LAN IP for the catalog, which the local CLI
+# cannot rely on reaching (laptops / CI / offline all break that route). The
+# benchmark is single-node and local, so pin it to 127.0.0.1:3031.
+if (-not $env:ADVERTISE_IP) { $env:ADVERTISE_IP = '127.0.0.1' }
+# Free port for the embedded PostgreSQL so we never touch a DeltaForge already
+# on :5432. Honors an explicit DELTAFORGE_PG_PORT if the operator set one.
+if (-not $env:DELTAFORGE_PG_PORT) {
+    $pgPort = 5442
+    for ($p = 5442; $p -lt 5600; $p++) {
+        try {
+            $pgListener = New-Object System.Net.Sockets.TcpListener ([System.Net.IPAddress]::Loopback, $p)
+            $pgListener.Start(); $pgListener.Stop(); $pgPort = $p; break
+        } catch { continue }
+    }
+    $env:DELTAFORGE_PG_PORT = "$pgPort"
+}
+Log "embedded PostgreSQL: port $($env:DELTAFORGE_PG_PORT) (isolated from any DeltaForge on :5432)"
+# NB: deliberately do NOT redirect USERPROFILE / HOME. License activation is
+#     DEVICE-bound: the activation token (%USERPROFILE%\.deltaforge\activation.token)
+#     and the machine instance id resolve from the user profile, and the console
+#     counts ONE device slot per machine, so the GUI and the benchmark share one
+#     activation. Hiding it makes the engine reject every query with HTTP 403
+#     NOT_ACTIVATED (same rationale as the Linux launcher). Full catalog
+#     isolation on Windows would need an engine-honored config-dir override (the
+#     desktop build resolves its app dir from the OS, not an env var);
+#     DELTAFORGE_PG_PORT already prevents the one collision that matters.
+
 New-Item -ItemType Directory -Force -Path 'logs' | Out-Null
 $PlatformLog = Join-Path $RepoRoot 'logs\platform.log'
 $PlatformErr = "$PlatformLog.err"
@@ -101,6 +168,18 @@ $Platform = $null
 function Stop-Platform {
     if ($script:Platform -and -not $script:Platform.HasExited) {
         try { $script:Platform.Kill() } catch { }
+    }
+    # The platform's embedded PostgreSQL is a separate process that can outlive
+    # the GUI. Stop only the one listening on OUR isolated bench port; a
+    # DeltaForge PG the user runs elsewhere (default :5432) has a different port
+    # and is left untouched.
+    if ($env:DELTAFORGE_PG_PORT) {
+        try {
+            $conns = Get-NetTCPConnection -LocalPort ([int]$env:DELTAFORGE_PG_PORT) -State Listen -ErrorAction SilentlyContinue
+            foreach ($c in $conns) {
+                try { Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue } catch { }
+            }
+        } catch { }
     }
 }
 
@@ -142,19 +221,50 @@ try {
     }
     Ok "platform healthy"
 
-    # Early license check: a healthy control plane does not mean the license
-    # still has daily capacity. One tiny query now turns a tapped license into a
-    # fast, friendly failure instead of 22+ failing workload queries. The CLI
-    # prints errors to stdout and still exits 0, so inspect the OUTPUT.
-    Log "checking benchmark license capacity"
-    $probe = (& $env:DF_CLI_PATH --format json query "SELECT 1 AS ok" 2>&1 | Out-String)
-    if (Looks-Like-License-Limit $probe) {
-        License-Help
-        Fail "Benchmark license check failed before running (looks like the shared daily cap)." `
-             @("Platform said: " + (($probe -replace '\s+', ' ').Trim().Substring(0, [Math]::Min(200, ($probe -replace '\s+', ' ').Trim().Length))))
-    } elseif ($probe -notmatch '"row_count"|"rows"') {
-        Write-Host ($probe | Select-Object -First 8)
-        Fail "A probe query did not return a result (not a license issue)." `
+    # A healthy control plane does NOT mean the embedded compute node is ready,
+    # that the device is activated, nor that the license still has daily
+    # capacity. Poll a tiny query: it has to (a) authenticate, (b) reach the
+    # freshly-spawned compute node (up a few seconds AFTER the control plane),
+    # (c) wait for the on-boot device activation (DELTA_FORGE_ACTIVATE_ON_BOOT,
+    # an async online exchange) to land, and (d) not hit the license cap.
+    # NOT_ACTIVATED is therefore RETRYABLE (activation in flight); a rejected /
+    # capped key is NOT (fail fast). The CLI prints errors to stdout and still
+    # exits 0, so inspect the OUTPUT.
+    Log "checking benchmark license capacity (waiting for compute to warm up)"
+    $probeOut = ''; $probeOk = $false; $sawNotActivated = $false
+    $probeDeadline = (Get-Date).AddSeconds(90)
+    while ((Get-Date) -lt $probeDeadline) {
+        if ($Platform.HasExited) {
+            if (Test-Path $PlatformLog) { Get-Content $PlatformLog -Tail 30 | Write-Host }
+            Diagnose-StartupFailure
+            Fail "The platform exited while waiting for compute to become ready. Full log: $PlatformLog"
+        }
+        $probeOut = (& $env:DF_CLI_PATH --format json query "SELECT 1 AS ok" 2>&1 | Out-String)
+        if (Looks-Like-Not-Activated $probeOut) {
+            # Device activation is requested on boot and runs asynchronously, so
+            # the first probes can race ahead of it. Keep polling; only a
+            # NOT_ACTIVATED that survives the whole deadline is a real failure.
+            $sawNotActivated = $true
+            Start-Sleep -Seconds 2; continue
+        }
+        if (Looks-Like-License-Limit $probeOut) {
+            License-Help
+            $oneLine = ($probeOut -replace '\s+', ' ').Trim()
+            Fail "Benchmark license check failed before running (daily cap, or the key was rejected)." `
+                 @("Platform said: " + $oneLine.Substring(0, [Math]::Min(200, $oneLine.Length)))
+        }
+        if ($probeOut -match '"row_count"|"rows"') { $probeOk = $true; break }
+        Start-Sleep -Seconds 2
+    }
+    if (-not $probeOk) {
+        if ($sawNotActivated) {
+            Activation-Help
+            $oneLine = ($probeOut -replace '\s+', ' ').Trim()
+            Fail "The license did not activate within 90s." `
+                 @("Platform said: " + $oneLine.Substring(0, [Math]::Min(200, $oneLine.Length)))
+        }
+        Write-Host ($probeOut | Select-Object -First 8)
+        Fail "A probe query did not return a result within 90s (compute did not come up, or auth failed)." `
              @("Check DF_USERNAME/DF_PASSWORD in .env and the platform log: $PlatformLog")
     }
     Ok "license OK — platform is serving queries"
