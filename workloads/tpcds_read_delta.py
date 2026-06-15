@@ -40,6 +40,7 @@ from pathlib import Path
 
 from engines.base import STEP_SQL_DDL, STEP_SQL_QUERY, WorkloadStep
 from .spec import Workload
+from ._df_catalog import df_register_setup, df_unregister_cleanup, df_qualify
 
 QUERIES_DIR = Path(__file__).parent / "tpcds" / "queries"
 
@@ -54,13 +55,16 @@ _TPCDS_TABLES = [
 
 _DELTA_ROOT = "{data_dir}_delta"
 
+_ZONE = "tpcds"
+_SCHEMA = "rd"
+
 
 def _df_setup() -> str:
-    return "SELECT 1"
+    return df_register_setup(_ZONE, _SCHEMA, _DELTA_ROOT, _TPCDS_TABLES)
 
 
 def _df_cleanup() -> str:
-    return "SELECT 1"
+    return df_unregister_cleanup(_ZONE, _SCHEMA, _TPCDS_TABLES)
 
 
 def _duckdb_setup() -> str:
@@ -173,17 +177,15 @@ def _query_paths_in_stream_order() -> list[Path]:
 
 
 def _load_query_steps() -> list[WorkloadStep]:
-    preamble = _df_open_preamble()
     steps: list[WorkloadStep] = []
     for sql_path in _query_paths_in_stream_order():
         sql = sql_path.read_text(encoding="utf-8").strip().rstrip(";").rstrip()
-        df_sql = preamble + ";\n" + sql
         steps.append(
             WorkloadStep(
                 id=sql_path.stem,
                 kind=STEP_SQL_QUERY,
                 sql=sql,
-                per_engine_sql={"df": df_sql},
+                per_engine_sql={"df": df_qualify(sql, _TPCDS_TABLES, _ZONE, _SCHEMA)},
                 description=f"TPC-DS {sql_path.stem.upper()} (Delta read)",
                 expects_rows=True,
             )

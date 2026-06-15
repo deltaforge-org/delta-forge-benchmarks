@@ -326,6 +326,57 @@ def workload_data_dir(workload, scale: int) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Delta fixture generation (auto-built on first run of a *_read_delta workload)
+# ---------------------------------------------------------------------------
+
+def _ensure_tpch_delta(scale: int, data_root: Path) -> None:
+    """Ensure the TPC-H parquet AND tpch_sf{scale}_delta tables exist. The Spark
+    delta generator reads the parquet; SSB in turn reads the TPC-H Delta tables."""
+    pq = data_root / f"tpch_sf{scale}"
+    if not (pq.exists() and any(pq.rglob("*.parquet"))):
+        print(f"[data] TPC-H SF={scale} parquet not found — generating now...")
+        from data_gen.generate_tpch import generate as _gen_tpch
+        _gen_tpch(scale, pq)
+    delta = data_root / f"tpch_sf{scale}_delta"
+    if not (delta.exists() and any(delta.glob("*"))):
+        print(f"[data] TPC-H SF={scale} Delta tables not found — building from parquet (Spark)...")
+        subprocess.run(
+            [sys.executable, str(REPO_ROOT / "data_gen" / "generate_tpch_delta.py"),
+             "--scale", str(scale), "--data-dir", str(data_root)],
+            check=True,
+        )
+
+
+def _ensure_delta_fixtures(name: str, scale: int, data_root: Path, delta_dir: Path) -> None:
+    """Build the Delta fixtures a ``*_read_delta`` workload reads. Each benchmark
+    has its own generator and prerequisites (see data_gen/)."""
+    gendir = REPO_ROOT / "data_gen"
+    if name == "tpch_read_delta":
+        _ensure_tpch_delta(scale, data_root)
+    elif name == "tpcds_read_delta":
+        print(f"[data] TPC-DS SF={scale} Delta tables not found — generating (DuckDB dsdgen + Spark)...")
+        subprocess.run(
+            [sys.executable, str(gendir / "generate_tpcds_delta.py"),
+             "--scale", str(scale), "--data-dir", str(data_root)], check=True)
+    elif name == "ssb_read_delta":
+        _ensure_tpch_delta(scale, data_root)  # SSB is derived from the TPC-H Delta tables
+        print(f"[data] SSB SF={scale} Delta tables not found — generating (Spark)...")
+        subprocess.run(
+            [sys.executable, str(gendir / "generate_ssb_delta.py"),
+             "--scale", str(scale), "--data-dir", str(data_root)], check=True)
+    elif name == "job_read_delta":
+        print(f"[data] JOB Delta tables not found — downloading IMDB + generating (Spark)...")
+        subprocess.run(
+            [sys.executable, str(gendir / "generate_job_delta.py"),
+             "--data-dir", str(data_root)], check=True)
+    else:
+        print(f"[data] no Delta-fixture generator mapped for {name}; "
+              f"expected pre-staged data at {delta_dir}", file=sys.stderr)
+        return
+    print(f"[data] {name}: Delta fixtures ready.")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -386,34 +437,19 @@ def cmd_run(args: argparse.Namespace) -> int:
         wl.name: workload_data_dir(wl, args.scale) for wl in workloads_to_run
     }
     if not args.dry_run:
-        # Auto-generate TPC-H data if any TPC-H workload is scheduled and its
-        # parquet files are missing. Graph workloads require separate generation
-        # (the data is too large to bundle and needs the bench's data_gen script).
+        # Auto-build the Delta fixtures every *_read_delta workload reads from its
+        # sibling {data_dir}_delta directory. Each benchmark has its own generator
+        # (and its own prerequisites); without this the registered tables are
+        # empty/absent and every query fails. Graph data is generated separately.
         for wl in workloads_to_run:
             if not wl.requires_input_data:
                 continue
             d = workload_data[wl.name]
-            if wl.data_subdir.startswith("tpch_sf"):
-                # 1. Ensure the TPC-H parquet fixture exists.
-                if not (d.exists() and any(d.rglob("*.parquet"))):
-                    print(f"[data] TPC-H SF={args.scale} parquet not found at {d} — generating now...")
-                    from data_gen.generate_tpch import generate as _gen_tpch
-                    _gen_tpch(args.scale, d)
-                    print(f"[data] TPC-H parquet generation complete.")
-                # 2. The *_read_delta workloads read Delta tables in the sibling
-                #    {data_dir}_delta directory; build them from the parquet (Spark)
-                #    if missing. Without this the OPEN DELTA TABLE targets an empty
-                #    table and every query fails with "No field named ...".
-                if "read_delta" in wl.name:
-                    delta_dir = Path(str(d) + "_delta")
-                    if not (delta_dir.exists() and any(delta_dir.glob("*"))):
-                        print(f"[data] TPC-H Delta tables not found at {delta_dir} — building from parquet via Spark...")
-                        subprocess.run(
-                            [sys.executable, str(REPO_ROOT / "data_gen" / "generate_tpch_delta.py"),
-                             "--scale", str(args.scale), "--data-dir", str(d.parent)],
-                            check=True,
-                        )
-                        print(f"[data] TPC-H Delta tables built.")
+            data_root = d.parent
+            delta_dir = Path(str(d) + "_delta")
+            if delta_dir.exists() and any(delta_dir.glob("*")):
+                continue  # fixtures already built
+            _ensure_delta_fixtures(wl.name, args.scale, data_root, delta_dir)
 
         # Final check: error on any read workload that still has no data.
         # Write workloads (requires_input_data=False) are exempt.
