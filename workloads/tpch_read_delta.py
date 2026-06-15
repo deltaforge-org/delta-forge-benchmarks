@@ -39,6 +39,7 @@ readers.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from engines.base import STEP_SQL_DDL, STEP_SQL_QUERY, WorkloadStep
@@ -58,18 +59,50 @@ _TPCH_TABLES = [
 _DELTA_ROOT = "{data_dir}_delta"
 
 
+# df has no SQL USE / search path, so a bare table name resolves to the default
+# schema (datafusion.public), not the catalog. The Delta tables are registered
+# under bench.tpch (see _df_setup), so df's copy of each query references them
+# qualified. TPC-H column names are all prefixed (l_, o_, ...) and the queries
+# carry no `table.column` qualifiers, so a whole-word substitution of the 8 table
+# names is unambiguous (longest-first guards the partsupp/part overlap).
+_DF_QUALIFY_RE = re.compile(
+    r"\b(" + "|".join(sorted(_TPCH_TABLES, key=len, reverse=True)) + r")\b"
+)
+
+
+def _df_qualify(sql: str) -> str:
+    return _DF_QUALIFY_RE.sub(r"bench.tpch.\1", sql)
+
+
 # ----- per-engine setup -----------------------------------------------------
 
 def _df_setup() -> str:
-    """df setup is a true no-op: OPEN DELTA TABLE is session-scoped, so the
-    measured queries carry their own OPENs. Returning a harmless SELECT 1
-    keeps the bench framework happy (a workload always runs at least one
-    setup statement)."""
-    return "SELECT 1"
+    """Register the existing Delta tables PERMANENTLY in the catalog. df runs
+    each statement as its own ``delta-forge-cli query`` session, so a
+    session-scoped OPEN DELTA TABLE cannot carry across the per-query sessions.
+    REGISTER DELTA TABLE writes a persistent catalog row (3-part
+    zone.schema.table) for an existing Delta directory without copying or
+    rewriting data, so every later query session sees the table by name. It is
+    idempotent (a repeat REGISTER on an existing name is a no-op, never an
+    error), and LOCATION is RELATIVE to the zone's storage_root."""
+    parts = [
+        f"CREATE ZONE IF NOT EXISTS bench STORAGE_ROOT = '{_DELTA_ROOT}'",
+        "CREATE SCHEMA IF NOT EXISTS bench.tpch",
+    ]
+    for t in _TPCH_TABLES:
+        parts.append(f"REGISTER DELTA TABLE bench.tpch.{t} LOCATION '{t}'")
+    return ";\n".join(parts)
 
 
 def _df_cleanup() -> str:
-    return "SELECT 1"
+    """Leave a clean catalog: UNREGISTER removes each catalog row WITHOUT
+    deleting the underlying Delta data, then drop the now-empty schema and zone.
+    (In the container each run already starts from a fresh bootstrapped catalog;
+    this keeps a re-used catalog free of residue too.)"""
+    parts = [f"UNREGISTER TABLE IF EXISTS bench.tpch.{t}" for t in _TPCH_TABLES]
+    parts.append("DROP SCHEMA IF EXISTS bench.tpch")
+    parts.append("DROP ZONE IF EXISTS bench")
+    return ";\n".join(parts)
 
 
 def _duckdb_setup() -> str:
@@ -153,19 +186,18 @@ def _cleanup_steps() -> list[WorkloadStep]:
 
 
 def _load_query_steps() -> list[WorkloadStep]:
-    preamble = _df_open_preamble()
     steps: list[WorkloadStep] = []
     for sql_path in sorted(QUERIES_DIR.glob("q*.sql")):
         sql = sql_path.read_text(encoding="utf-8").strip().rstrip(";").rstrip()
-        # df script: OPEN preambles then the SELECT, all in one CLI call.
-        # df_engine.py wraps only the last statement with SHOW STATS ACTUAL.
-        df_sql = preamble + ";\n" + sql
+        # df reads the tables registered in the catalog by _df_setup (3-part
+        # CREATE DELTA TABLE); qualify the bare TPC-H names to bench.tpch.* so
+        # they resolve (df has no USE). No per-query OPEN.
         steps.append(
             WorkloadStep(
                 id=sql_path.stem,
                 kind=STEP_SQL_QUERY,
                 sql=sql,
-                per_engine_sql={"df": df_sql},
+                per_engine_sql={"df": _df_qualify(sql)},
                 description=f"TPC-H {sql_path.stem.upper()} (Delta read)",
                 expects_rows=True,
             )
