@@ -638,8 +638,15 @@ def cmd_run(args: argparse.Namespace) -> int:
     )
     data_dir = primary_data_dir
 
-    # Build the run directory.
-    out_dir = build_results_dir(Path(args.results_dir), args.tag)
+    # Build the run directory. An isolated single-engine child reuses the exact
+    # directory the parent already created (passed via --out-dir) so every
+    # engine's results land together; only the parent mints a fresh timestamped
+    # dir.
+    if args.out_dir:
+        out_dir = Path(args.out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        out_dir = build_results_dir(Path(args.results_dir), args.tag)
     print(f"results:   {out_dir}")
 
     # Capture host facts up front so even an aborted pre-flight has the
@@ -703,10 +710,85 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("\nDRY RUN: re-run without --dry-run to execute.")
         return 0
 
-    # The real run loop.
+    # The real run loop. Each engine runs in its OWN OS process so a hard crash
+    # in one engine -- notably a Spark JVM that gets kill -9'd by its own
+    # OnOutOfMemoryError handler on a heavy join -- cannot take down the engines
+    # that have not run yet. PySpark is one-JVM-per-process, so two Spark
+    # sessions in a single process cannot both survive the first one crashing;
+    # process isolation is the only correct fix. The parent spawns one child
+    # per engine (re-invoking this script with --out-dir) and merges each
+    # child's durable raw/<engine>.jsonl plus its raw/<engine>.manifest.json
+    # fragment.
     raw_dir = out_dir / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
     overall_start = time.perf_counter()
 
+    if args.out_dir is None:
+        # PARENT: spawn one isolated child process per engine, sequentially.
+        for engine_name in engines_wanted:
+            print(f"\n=== engine: {engine_name} (isolated subprocess) ===")
+            child_cmd = [
+                sys.executable, os.path.abspath(__file__),
+                "--scale", str(args.scale),
+                "--engines", engine_name,
+                "--workloads", ",".join(w.name for w in workloads_to_run),
+                "--results-dir", str(args.results_dir),
+                "--out-dir", str(out_dir),
+                "--non-interactive",
+            ]
+            if args.no_purge:
+                child_cmd.append("--no-purge")
+            if args.force:
+                child_cmd.append("--force")
+            if args.cold_runs is not None:
+                child_cmd += ["--cold-runs", str(args.cold_runs)]
+            if args.warm_runs is not None:
+                child_cmd += ["--warm-runs", str(args.warm_runs)]
+            try:
+                rc = subprocess.run(child_cmd).returncode
+            except Exception as e:  # noqa: BLE001
+                print(f"  engine {engine_name}: subprocess launch failed: {e}",
+                      file=sys.stderr)
+                rc = -1
+            if rc != 0:
+                # The child writes its per-step jsonl as it runs, so whatever
+                # completed before a crash is still scored. Record the crash and
+                # keep going to the next engine.
+                print(f"  engine {engine_name}: isolated subprocess exited "
+                      f"rc={rc}; crash contained, continuing with the remaining "
+                      f"engines.", file=sys.stderr)
+
+        # Merge each child's manifest fragment into the parent manifest.
+        for engine_name in engines_wanted:
+            frag_path = raw_dir / f"{engine_name}.manifest.json"
+            if not frag_path.exists():
+                continue
+            try:
+                frag = json.loads(frag_path.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                continue
+            manifest["engine_versions"].update(
+                {k: v for k, v in frag.get("engine_versions", {}).items()
+                 if v is not None})
+            manifest["cold_starts"].update(
+                {k: v for k, v in frag.get("cold_starts", {}).items()
+                 if v is not None})
+
+        manifest["elapsed_seconds"] = round(time.perf_counter() - overall_start, 3)
+        with (out_dir / "manifest.json").open("w") as f:
+            json.dump(manifest, f, indent=2, sort_keys=True)
+            f.write("\n")
+        print(f"\nDone. Results: {out_dir}")
+
+        # Render the studyable proof: per-query timings plus the cross-engine
+        # correctness verdict. Skipped for a dry run (handled earlier).
+        if not args.dry_run:
+            _emit_report(out_dir)
+        return 0
+
+    # CHILD (--out-dir set): run the requested engine(s) in THIS process and
+    # write a per-engine manifest fragment for the parent to merge. No
+    # top-level manifest.json and no report here -- the parent owns both.
     for engine_name in engines_wanted:
         current_engine_name = engine_name  # noqa: F841 (used by cold_purge_fn closure)
         mod_path, cls_name = ENGINE_REGISTRY[engine_name]
@@ -794,18 +876,18 @@ def cmd_run(args: argparse.Namespace) -> int:
         except Exception as e:
             print(f"  warn: engine.stop() failed: {e}", file=sys.stderr)
 
-    # Finalize manifest.
-    manifest["elapsed_seconds"] = round(time.perf_counter() - overall_start, 3)
-    with (out_dir / "manifest.json").open("w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2, sort_keys=True)
-        f.write("\n")
-    print(f"\nDone. Results: {out_dir}")
+        # Write this engine's manifest fragment for the parent to merge. The
+        # per-step jsonl was already written incrementally during the run, so it
+        # survives even if this child crashes right after the last query.
+        frag = {
+            "engine_versions": {
+                engine_name: manifest["engine_versions"].get(engine_name)},
+            "cold_starts": {
+                engine_name: manifest["cold_starts"].get(engine_name)},
+        }
+        (raw_dir / f"{engine_name}.manifest.json").write_text(
+            json.dumps(frag) + "\n", encoding="utf-8")
 
-    # Always finish by rendering the studyable proof: per-query timings plus the
-    # cross-engine correctness verdict (df results vs DuckDB/Spark). Skipped for
-    # a dry run (no records) since there is nothing to report.
-    if not args.dry_run:
-        _emit_report(out_dir)
     return 0
 
 
@@ -836,6 +918,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Where per-run artifacts go. Defaults to /results inside container.")
     p.add_argument("--tag", default=None,
                    help="Optional suffix appended to the results directory name.")
+    p.add_argument("--out-dir", default=None,
+                   help="INTERNAL: run as an isolated single-engine child into this "
+                        "exact, already-created results dir. Set automatically by the "
+                        "parent process when it spawns one subprocess per engine so a "
+                        "Spark JVM crash in one engine cannot take down the others. "
+                        "Not for direct use.")
     p.add_argument("--no-purge", action="store_true",
                    help="Skip the cold-run state purge (useful when the dropcaches sidecar is unavailable).")
     p.add_argument("--dry-run", action="store_true",

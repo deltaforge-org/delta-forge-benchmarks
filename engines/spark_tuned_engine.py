@@ -52,8 +52,9 @@ Full tuning rationale table:
 | spark.sql.cbo.enabled                                  | true              | Cost-based optimizer. CBO falls back to size-based heuristics when ANALYZE TABLE has not been run (which is our case); harmless when stats absent. |
 | spark.sql.cbo.joinReorder.enabled                      | true              | Reorder joins by computed stats when available. AQE handles most of this adaptively, but CBO still helps planner choose initial join order. |
 | spark.sql.statistics.histogram.enabled                 | true              | Histograms for join selectivity. Used when ANALYZE TABLE ... FOR COLUMNS is run. |
-| spark.driver.memory                                    | 8g                | Local mode = driver runs everything. 8g matches a typical reviewer's expectation; bench container budget is 16g. |
-| spark.executor.memory                                  | 8g                | Same JVM in local mode, but Spark reads both keys; setting both makes the resolved config unambiguous. |
+| spark.driver.memory                                    | 12g               | Local mode = driver runs everything. 8g OOM'd on JOB's heaviest many-way joins (cast_info ~36M rows); 12g clears the full JOB suite. One engine runs per process, so only one JVM is live. |
+| spark.executor.memory                                  | 12g               | Same JVM in local mode, but Spark reads both keys; setting both makes the resolved config unambiguous. |
+| spark.task.maxFailures                                 | 1                 | Fail an OOM'd task immediately. The default (4 retries) turns one OOM on a heavy join into a multi-minute thrash before the JVM dies; one attempt fails the query cleanly so the run moves on. |
 | spark.memory.fraction                                  | 0.7               | Up from default 0.6: more for execution + storage, less for user objects. Helps shuffle-heavy plans. |
 | spark.memory.storageFraction                           | 0.3               | Down from 0.5: analytics queries are execution-heavy (joins/aggs), not cache-heavy. |
 | spark.memory.offHeap.enabled                           | true              | Off-heap memory bypasses JVM GC pressure for shuffle buffers. |
@@ -142,6 +143,11 @@ class SparkTunedEngine(SparkDefaultEngine):
             "spark.sql.adaptive.localShuffleReader.enabled":                    "true",
             "spark.sql.adaptive.autoBroadcastJoinThreshold":                    str(100 * 1024 * 1024),
 
+            # ----- fail fast: never retry an OOM'd task (default 4 retries turns
+            # a single OOM on a heavy join into a multi-minute thrash before the
+            # JVM dies; one attempt fails the query cleanly so the run moves on) -----
+            "spark.task.maxFailures":                "1",
+
             # ----- partitioning + join thresholds -----
             "spark.sql.shuffle.partitions":          str(self._chosen_partitions),
             "spark.sql.autoBroadcastJoinThreshold":  str(100 * 1024 * 1024),
@@ -154,8 +160,8 @@ class SparkTunedEngine(SparkDefaultEngine):
             "spark.sql.optimizer.nestedSchemaPruning.enabled":       "true",
 
             # ----- memory: more for execution, less for user objects -----
-            "spark.driver.memory":          "8g",
-            "spark.executor.memory":        "8g",
+            "spark.driver.memory":          "12g",
+            "spark.executor.memory":        "12g",
             "spark.memory.fraction":        "0.7",
             "spark.memory.storageFraction": "0.3",
             "spark.memory.offHeap.enabled": "true",
@@ -221,6 +227,13 @@ class SparkTunedEngine(SparkDefaultEngine):
             else:
                 builder = builder.config(k, v)
 
+        # In local mode spark.driver.memory via the builder does NOT size the
+        # JVM heap (the driver JVM launches before the config is read); the
+        # launcher reads SPARK_DRIVER_MEMORY instead. Export it so the tuned 8g
+        # heap actually applies. Safe: each engine runs in its own process.
+        os.environ["SPARK_DRIVER_MEMORY"] = self._config_keys.get(
+            "spark.driver.memory", "8g")
+
         sess = builder.getOrCreate()
         # Cache it inside _spark_session so stop() at teardown closes the
         # right object.
@@ -235,7 +248,7 @@ class SparkTunedEngine(SparkDefaultEngine):
         )
         info["tuning_profile_summary"] = (
             "Spark 4.0 profile: AQE (coalesce+skew+rebalance+localShuffleReader+autoBroadcast 100MB); "
-            "DPP+useStats; runtime bloom filter; nested schema pruning; 8g driver+executor + 4g off-heap; "
+            "DPP+useStats; runtime bloom filter; nested schema pruning; 12g driver+executor + 4g off-heap; "
             "CBO+joinReorder+histograms; ANSI mode + doubleQuotedIdentifiers; "
             "Kryo 512m; Arrow pyspark; V2 bucketing"
         )

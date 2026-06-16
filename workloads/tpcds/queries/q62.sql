@@ -4,26 +4,26 @@ SELECT w_substr,
        sum(CASE
                WHEN (ws_ship_date_sk - ws_sold_date_sk <= 30) THEN 1
                ELSE 0
-           END) AS "30 days",
+           END) AS days_30,
        sum(CASE
                WHEN (ws_ship_date_sk - ws_sold_date_sk > 30)
                     AND (ws_ship_date_sk - ws_sold_date_sk <= 60) THEN 1
                ELSE 0
-           END) AS "31-60 days",
+           END) AS days_31_60,
        sum(CASE
                WHEN (ws_ship_date_sk - ws_sold_date_sk > 60)
                     AND (ws_ship_date_sk - ws_sold_date_sk <= 90) THEN 1
                ELSE 0
-           END) AS "61-90 days",
+           END) AS days_61_90,
        sum(CASE
                WHEN (ws_ship_date_sk - ws_sold_date_sk > 90)
                     AND (ws_ship_date_sk - ws_sold_date_sk <= 120) THEN 1
                ELSE 0
-           END) AS "91-120 days",
+           END) AS days_91_120,
        sum(CASE
                WHEN (ws_ship_date_sk - ws_sold_date_sk > 120) THEN 1
                ELSE 0
-           END) AS ">120 days"
+           END) AS days_gt_120
 FROM web_sales,
   (SELECT SUBSTRING(w_warehouse_name,1,20) w_substr,
           *

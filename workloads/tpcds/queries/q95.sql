@@ -6,9 +6,9 @@ WITH ws_wh AS
         web_sales ws2
    WHERE ws1.ws_order_number = ws2.ws_order_number
      AND ws1.ws_warehouse_sk <> ws2.ws_warehouse_sk)
-SELECT count(DISTINCT ws_order_number) AS "order count" ,
-       sum(ws_ext_ship_cost) AS "total shipping cost" ,
-       sum(ws_net_profit) AS "total net profit"
+SELECT count(DISTINCT ws_order_number) AS order_count ,
+       sum(ws_ext_ship_cost) AS total_shipping_cost ,
+       sum(ws_net_profit) AS total_net_profit
 FROM web_sales ws1 ,
      date_dim ,
      customer_address ,

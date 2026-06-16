@@ -60,6 +60,13 @@ LIMITS=""
 log "pulling $IMAGE"
 docker pull "$IMAGE"
 mkdir -p "$RESULTS"
+# The image runs the harness as a fixed non-root user (uid 10001 `bench`, because
+# PostgreSQL's initdb refuses to run as root). A bind-mounted host directory keeps
+# its host ownership inside the container, so unless it is writable by that uid the
+# runner cannot create its per-run subdir and dies with EACCES on /results. Make
+# the mount world-writable (chmod, not chown: needs no root and works for any host
+# uid). Best-effort: a read-only or root-owned parent is surfaced by the run itself.
+chmod a+rwx "$RESULTS" 2>/dev/null || true
 log "running the benchmark (limits:${LIMITS:- all host resources}; results -> $RESULTS)"
 exec docker run --rm \
     $LIMITS \

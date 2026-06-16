@@ -47,7 +47,8 @@ class SparkDefaultEngine(Engine):
     _config_keys: dict[str, str] = {
         "spark.sql.extensions":             "io.delta.sql.DeltaSparkSessionExtension",
         "spark.sql.catalog.spark_catalog":  "org.apache.spark.sql.delta.catalog.DeltaCatalog",
-        "spark.driver.memory":              "4g",
+        "spark.driver.memory":              "12g",
+        "spark.task.maxFailures":           "1",
         "spark.ui.showConsoleProgress":     "false",
         "spark.log.level":                  "WARN",
         "spark.master":                     "local[*]",

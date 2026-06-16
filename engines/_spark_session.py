@@ -22,6 +22,16 @@ import sys
 SPARK_VERSION = "4.0.0"
 DELTA_VERSION = "4.0.0"
 
+# Stock driver heap. In local mode the driver JVM IS the executor, and it is
+# launched the first time a SparkContext is created -- BEFORE the builder's
+# spark.driver.memory is read -- so that builder key alone does not size the
+# heap. SPARK_DRIVER_MEMORY is read by the launcher when the JVM starts, so we
+# export it before getOrCreate(). 4g OOM'd on JOB's wide joins; 8g still OOM'd
+# on JOB's heaviest many-way joins (cast_info is ~36M rows). 12g clears JOB and
+# still fits the benchmark container's default envelope when one engine runs at
+# a time (engines now run one-per-process, so only one JVM is live).
+STOCK_DRIVER_MEMORY = "12g"
+
 
 _REQUIRED = {
     "pyspark": f"pyspark=={SPARK_VERSION}",
@@ -83,6 +93,11 @@ def get_spark():
 
     from pyspark.sql import SparkSession
 
+    # Size the driver heap via the env the launcher reads at JVM start (see
+    # STOCK_DRIVER_MEMORY). Setting it here is safe because each engine runs in
+    # its own process, so this never overwrites another engine's value.
+    os.environ["SPARK_DRIVER_MEMORY"] = STOCK_DRIVER_MEMORY
+
     try:
         from delta import configure_spark_with_delta_pip  # type: ignore
         builder = configure_spark_with_delta_pip(
@@ -93,7 +108,8 @@ def get_spark():
                         "io.delta.sql.DeltaSparkSessionExtension")
                 .config("spark.sql.catalog.spark_catalog",
                         "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-                .config("spark.driver.memory", "4g")
+                .config("spark.driver.memory", STOCK_DRIVER_MEMORY)
+                .config("spark.task.maxFailures", "1")
                 .config("spark.ui.showConsoleProgress", "false")
                 .config("spark.log.level", "WARN")
         )
@@ -107,7 +123,8 @@ def get_spark():
                     "io.delta.sql.DeltaSparkSessionExtension")
             .config("spark.sql.catalog.spark_catalog",
                     "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-            .config("spark.driver.memory", "4g")
+            .config("spark.driver.memory", STOCK_DRIVER_MEMORY)
+            .config("spark.task.maxFailures", "1")
             .config("spark.ui.showConsoleProgress", "false")
             .config("spark.log.level", "WARN")
             .getOrCreate()

@@ -1,4 +1,4 @@
-SELECT sum(ws_ext_discount_amt) AS "Excess Discount Amount"
+SELECT sum(ws_ext_discount_amt) AS excess_discount_amount
 FROM web_sales,
      item,
      date_dim
