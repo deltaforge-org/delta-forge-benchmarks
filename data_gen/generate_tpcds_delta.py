@@ -48,6 +48,10 @@ import sys
 import time
 from pathlib import Path
 
+# Repo root resolved from this file so the benchmark runs on any host (not just
+# the container's /workspace WORKDIR). data_gen/<file>.py -> parent.parent.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
 
 TPCDS_TABLES = [
     "call_center", "catalog_page", "catalog_returns", "catalog_sales",
@@ -121,7 +125,7 @@ def stage_parquet(
 
 def stage_delta(parquet_dir: Path, delta_dir: Path, overwrite: bool) -> None:
     """Rewrite each parquet file as a plain Delta directory."""
-    sys.path.insert(0, "/workspace")
+    sys.path.insert(0, str(_REPO_ROOT))
     from engines._spark_session import get_spark  # type: ignore
 
     spark = get_spark()
@@ -192,7 +196,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scale", type=int, default=1,
                         help="TPC-DS scale factor.")
-    parser.add_argument("--data-dir", default="/workspace/data",
+    parser.add_argument("--data-dir", default=str(_REPO_ROOT / "data"),
                         help="Bench data root.")
     parser.add_argument("--overwrite", action="store_true",
                         help="Delete and recreate parquet/Delta outputs if they exist.")
@@ -203,7 +207,7 @@ def main() -> int:
                              "host RAM. Default 8GB is safe on a 32 GB box "
                              "while leaving room for the Spark JVM in the "
                              "Delta-rewrite stage that follows.")
-    parser.add_argument("--temp-dir", default="/workspace/data/duckdb_tmp",
+    parser.add_argument("--temp-dir", default=str(_REPO_ROOT / "data" / "duckdb_tmp"),
                         help="DuckDB SET temp_directory. Holds spilled "
                              "intermediate state during dsdgen. At SF100 "
                              "this can reach tens of GB; put it on a "
@@ -219,7 +223,7 @@ def main() -> int:
     )
     stage_delta(parquet_dir, delta_dir, args.overwrite)
 
-    queries_dir = Path("/workspace/workloads/tpcds/queries")
+    queries_dir = _REPO_ROOT / "workloads" / "tpcds" / "queries"
     extract_queries(queries_dir)
 
     print(f"\n[done] TPC-DS plain Delta tables under {delta_dir}")

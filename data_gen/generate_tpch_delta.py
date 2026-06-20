@@ -31,6 +31,11 @@ import time
 from pathlib import Path
 
 
+# Repo root, resolved from THIS file's location so the benchmark runs on any
+# host (the container historically used WORKDIR=/workspace; off-container that
+# path does not exist). data_gen/<file>.py -> parent.parent == repo root.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
 TABLES = [
     "region", "nation", "supplier", "customer",
     "part", "partsupp", "orders", "lineitem",
@@ -41,7 +46,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scale", type=int, default=1,
                         help="TPC-H scale factor; reads tpch_sf<N>/, writes tpch_sf<N>_delta/.")
-    parser.add_argument("--data-dir", default="/workspace/data",
+    parser.add_argument("--data-dir", default=str(_REPO_ROOT / "data"),
                         help="Bench data root.")
     parser.add_argument("--overwrite", action="store_true",
                         help="Delete and recreate the Delta directory if it already exists.")
@@ -57,7 +62,7 @@ def main() -> int:
 
     # Re-use the bench's Spark builder so the session config matches the
     # engine adapter under test.
-    sys.path.insert(0, "/workspace")
+    sys.path.insert(0, str(_REPO_ROOT))
     from engines._spark_session import get_spark  # type: ignore
 
     spark = get_spark()

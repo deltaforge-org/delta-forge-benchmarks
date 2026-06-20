@@ -287,6 +287,12 @@ if [ "$(uname -s)" = "Linux" ]; then
         warn "install Xvfb (Arch: sudo pacman -S xorg-server-xvfb; Debian/Ubuntu: sudo apt-get install -y xvfb), then retry."
     fi
 fi
+# Boot the platform via the DELTA_FORGE_HEADLESS env contract set above (NOT the
+# --headless CLI flag). Both trigger the same no-window run_headless path, but a
+# fresh-boot self-deadlock in that path (run_after_lock recursion re-taking the
+# single-instance lock) is being fixed engine-side and shipped in the next
+# release; the bench deliberately does not adopt the new --headless attribute
+# until then.
 "$DF_PLATFORM_BIN" >>"$PLATFORM_LOG" 2>&1 & PLATFORM_PID=$!
 
 log "waiting for the control plane to become healthy (up to 180s)"

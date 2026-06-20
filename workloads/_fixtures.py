@@ -17,7 +17,13 @@ Spark+Delta pattern (single-statement CTAS — Spark infers types from parquet):
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from engines.base import STEP_SQL_DDL, WorkloadStep
+
+# Repo root resolved from this file so every path below works on any host, not
+# just the container's /workspace WORKDIR. workloads/_fixtures.py -> parent.parent.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 TPCH_LOAD_ORDER = [
     "region", "nation", "supplier", "customer",
@@ -28,9 +34,8 @@ _DF_ZONE = "bench"
 _DF_SCHEMA = "bench.tpch"
 _DF_DELTA_LOC = "tpch_sf{scale}"  # zone-relative; bench_runner substitutes {scale}
 
-# Zone storage root is fixed to /workspace/bench_delta — always inside the container.
-# No env-var override: local paths are workstation-specific and break portability.
-_DF_ZONE_ROOT = "/workspace/bench_delta"
+# Zone storage root, anchored under the repo root so it works on any host.
+_DF_ZONE_ROOT = str(_REPO_ROOT / "bench_delta")
 
 # External zone for staging raw parquet. DeltaForge does not expose a
 # read_parquet() table function; the canonical pattern is to wrap source
@@ -43,7 +48,7 @@ _DF_ZONE_ROOT = "/workspace/bench_delta"
 # pass a zone-relative LOCATION (e.g. tpch_sf1/region.parquet).
 _DF_EXT_ZONE = "bench_ext"
 _DF_EXT_SCHEMA = "bench_ext.tpch_stage"
-_DF_EXT_ZONE_ROOT = "/workspace/data"
+_DF_EXT_ZONE_ROOT = str(_REPO_ROOT / "data")
 
 # Read-only external zone for the pure-reader bench (tpch_read). External
 # tables here point at the source parquet so every engine reads the same
@@ -283,7 +288,7 @@ def make_parquet_view_steps(measured: bool = False) -> list[WorkloadStep]:
 # destination tables.
 _DF_WRITE_ZONE = "bench_w"
 _DF_WRITE_SCHEMA = "bench_w.tpch_w"
-_DF_WRITE_ZONE_ROOT = "/workspace/bench_delta_w"
+_DF_WRITE_ZONE_ROOT = str(_REPO_ROOT / "bench_delta_w")
 
 # External schema where the source CSV is mounted (read-only).
 _DF_CSV_SRC_SCHEMA = "bench_ext.csv_input"
@@ -291,19 +296,19 @@ _DF_CSV_SRC_SCHEMA = "bench_ext.csv_input"
 # Per-engine target dirs for the write artefacts. Each engine writes into
 # its own subtree so successive iterations of cold/warm runs can drop and
 # rewrite without cross-engine interference.
-_DUCKDB_WRITE_DIR = "/workspace/duckdb_write_out"
-_SPARK_WRITE_DIR = "/workspace/spark_write_out"
+_DUCKDB_WRITE_DIR = str(_REPO_ROOT / "duckdb_write_out")
+_SPARK_WRITE_DIR = str(_REPO_ROOT / "spark_write_out")
 
 # Lineitem-shape CSV input. The gen_csv_input.py script materializes
-# /workspace/data/csv_input/<table>.csv from the existing TPC-H parquet.
-_CSV_INPUT_PATH = "/workspace/data/csv_input/{table}.csv"
+# <repo>/data/csv_input/<table>.csv from the existing TPC-H parquet.
+_CSV_INPUT_PATH = str(_REPO_ROOT / "data" / "csv_input") + "/{table}.csv"
 
 
 def _df_csv_init() -> str:
     """One-shot zone + schema bootstrap for the write workload."""
     return (
         f"CREATE ZONE IF NOT EXISTS {_DF_EXT_ZONE} TYPE EXTERNAL "
-        f"STORAGE_ROOT = '/workspace/data' "
+        f"STORAGE_ROOT = '{_DF_EXT_ZONE_ROOT}' "
         f"COMMENT 'Bench external zone';\n"
         f"CREATE SCHEMA IF NOT EXISTS {_DF_CSV_SRC_SCHEMA};\n"
         f"CREATE ZONE IF NOT EXISTS {_DF_WRITE_ZONE} TYPE DELTA "
@@ -345,7 +350,7 @@ def _spark_parquet_ctas_sql(table: str) -> str:
     """Spark CREATE OR REPLACE TABLE ... USING DELTA AS SELECT from typed
     parquet. Single statement; OR REPLACE handles re-runs idempotently."""
     path = _SPARK_WRITE_DIR + f"/{table}"
-    pq_path = f"/workspace/data/tpch_sf1/{table}.parquet"
+    pq_path = f"{_DF_EXT_ZONE_ROOT}/tpch_sf1/{table}.parquet"
     return (
         f"CREATE OR REPLACE TABLE {table} USING DELTA LOCATION '{path}' "
         f"AS SELECT * FROM parquet.`{pq_path}`"
@@ -361,7 +366,7 @@ def _duckdb_parquet_ctas_sql(table: str) -> str:
     COPY ... TO ... (FORMAT PARQUET). Source = same typed parquet the
     other engines read. Output bytes are comparable; df and Spark
     additionally write a small JSON commit log."""
-    pq_path = f"/workspace/data/tpch_sf1/{table}.parquet"
+    pq_path = f"{_DF_EXT_ZONE_ROOT}/tpch_sf1/{table}.parquet"
     parquet_path = f"{_DUCKDB_WRITE_DIR}/{table}.parquet"
     return (
         f"COPY (SELECT * FROM read_parquet('{pq_path}')) "

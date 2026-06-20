@@ -31,6 +31,10 @@ import sys
 import time
 from pathlib import Path
 
+# Repo root resolved from this file so the benchmark runs on any host (not just
+# the container's /workspace WORKDIR). data_gen/<file>.py -> parent.parent.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
 
 SSB_TABLES = ["date", "part", "supplier", "customer", "lineorder"]
 
@@ -144,7 +148,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scale", type=int, default=1,
                         help="Source TPC-H scale factor; writes ssb_sf<N>_delta/.")
-    parser.add_argument("--data-dir", default="/workspace/data",
+    parser.add_argument("--data-dir", default=str(_REPO_ROOT / "data"),
                         help="Bench data root.")
     parser.add_argument("--overwrite", action="store_true",
                         help="Delete and recreate the Delta directory if it exists.")
@@ -162,7 +166,7 @@ def main() -> int:
             print("Run data_gen/generate_tpch_delta.py first.", file=sys.stderr)
             return 1
 
-    sys.path.insert(0, "/workspace")
+    sys.path.insert(0, str(_REPO_ROOT))
     from engines._spark_session import get_spark  # type: ignore
 
     spark = get_spark()

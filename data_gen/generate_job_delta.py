@@ -38,6 +38,10 @@ import sys
 import time
 from pathlib import Path
 
+# Repo root resolved from this file so the benchmark runs on any host (not just
+# the container's /workspace WORKDIR). data_gen/<file>.py -> parent.parent.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
 
 IMDB_TABLES = [
     "aka_name", "aka_title", "cast_info", "char_name", "comp_cast_type",
@@ -125,7 +129,7 @@ def stage_parquet(csv_dir: Path, parquet_dir: Path, schema_sql: Path,
 
 def stage_delta(parquet_dir: Path, delta_dir: Path, overwrite: bool) -> None:
     """Rewrite each parquet file as a plain Delta directory."""
-    sys.path.insert(0, "/workspace")
+    sys.path.insert(0, str(_REPO_ROOT))
     from engines._spark_session import get_spark  # type: ignore
 
     spark = get_spark()
@@ -167,7 +171,7 @@ def stage_delta(parquet_dir: Path, delta_dir: Path, overwrite: bool) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-dir", default="/workspace/data",
+    parser.add_argument("--data-dir", default=str(_REPO_ROOT / "data"),
                         help="Bench data root.")
     parser.add_argument("--imdb-url", default=DEFAULT_IMDB_URL,
                         help="Source URL for imdb.tgz; override for alt mirror.")
@@ -180,7 +184,7 @@ def main() -> int:
     parquet_dir = data_root / "job"
     delta_dir = data_root / "job_delta"
 
-    schema_sql = Path("/workspace/workloads/job/schema.sql")
+    schema_sql = _REPO_ROOT / "workloads" / "job" / "schema.sql"
     if not schema_sql.exists():
         print(f"ERROR: missing JOB schema: {schema_sql}", file=sys.stderr)
         return 1

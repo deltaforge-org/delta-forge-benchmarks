@@ -17,6 +17,10 @@ import sys
 import time
 from pathlib import Path
 
+# Repo root resolved from this file so the benchmark runs on any host (not just
+# the container's /workspace WORKDIR). data_gen/<file>.py -> parent.parent.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -24,11 +28,13 @@ def main() -> int:
                         help="TPC-H scale factor (matches data/tpch_sf<N>/).")
     parser.add_argument("--table", default="lineitem",
                         help="TPC-H table to convert (default: lineitem).")
-    parser.add_argument("--out-dir", default="/workspace/data/csv_input",
+    parser.add_argument("--out-dir", default=str(_REPO_ROOT / "data" / "csv_input"),
                         help="Where the .csv lands.")
+    parser.add_argument("--data-dir", default=str(_REPO_ROOT / "data"),
+                        help="Bench data root holding tpch_sf<N>/.")
     args = parser.parse_args()
 
-    src = Path(f"/workspace/data/tpch_sf{args.scale}/{args.table}.parquet")
+    src = Path(args.data_dir) / f"tpch_sf{args.scale}" / f"{args.table}.parquet"
     if not src.exists():
         print(f"ERROR: source parquet missing: {src}", file=sys.stderr)
         return 1
