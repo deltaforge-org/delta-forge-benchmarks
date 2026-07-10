@@ -124,6 +124,11 @@ mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME"
 #     done. (An earlier revision redirected HOME and broke activation this way.)
 
 export DELTA_FORGE_HEADLESS=1
+# The platform no longer embeds a compute node: the headless server forwards every
+# query to a separate delta-forge-compute node. For a single-machine benchmark we
+# want that node co-located, so the server spawns + auto-approves one. Without this
+# the benchmark would boot a control plane with no compute and every query 503s.
+export DELTA_FORGE_COMPUTE_AUTOSPAWN="${DELTA_FORGE_COMPUTE_AUTOSPAWN:-1}"
 # Auto-activate this device against the license on first boot, so the benchmark
 # runs on a machine that has never opened the DeltaForge GUI. Device-bound and
 # idempotent: it takes the machine's ONE shared activation slot, or reuses an

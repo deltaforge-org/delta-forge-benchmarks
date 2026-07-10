@@ -113,6 +113,11 @@ if (-not $env:DELTA_FORGE_LICENSE_KEY) {
 # falls back to the wizard and this run fails fast with a startup/license error
 # instead of hanging on a window.
 $env:DELTA_FORGE_HEADLESS = '1'
+# The platform no longer embeds compute: the headless server forwards queries to a
+# separate delta-forge-compute node. For a single-machine benchmark we want it
+# co-located, so the server spawns + auto-approves one; without this every query
+# would 503 (control plane with no compute).
+if (-not $env:DELTA_FORGE_COMPUTE_AUTOSPAWN) { $env:DELTA_FORGE_COMPUTE_AUTOSPAWN = '1' }
 # Auto-activate this device on first boot so the benchmark runs on a machine
 # that has never opened the DeltaForge GUI. Device-bound + idempotent: it takes
 # the machine's ONE shared activation slot, or reuses an existing activation
